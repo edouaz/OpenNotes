@@ -46,6 +46,24 @@ final class PaginationTests: XCTestCase {
         XCTAssertFalse(view.pageTurn.shouldBegin(velocity: CGPoint(x: -250, y: 0)))
     }
 
+    func testZoomedPageTurnsOnlyAtHorizontalEdge() {
+        let view = PageScrollView(canvas: InkCanvasView())
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 600)
+        view.pageSize = CGSize(width: 794, height: 1123); view.layoutIfNeeded()
+        view.canvas.setZoomScale(2, animated: false); view.alignBackground()
+        let left = -view.canvas.adjustedContentInset.left
+        let right = view.canvas.contentSize.width - view.canvas.bounds.width + view.canvas.adjustedContentInset.right
+        view.canvas.contentOffset.x = (left + right) / 2
+        XCTAssertFalse(view.pageTurn.shouldBegin(velocity: CGPoint(x: -300, y: 0)))
+        XCTAssertFalse(view.pageTurn.shouldBegin(velocity: CGPoint(x: 300, y: 0)))
+        view.canvas.contentOffset.x = right
+        XCTAssertTrue(view.pageTurn.shouldBegin(velocity: CGPoint(x: -300, y: 0)))
+        XCTAssertFalse(view.pageTurn.shouldBegin(velocity: CGPoint(x: 300, y: 0)))
+        view.canvas.contentOffset.x = left
+        XCTAssertTrue(view.pageTurn.shouldBegin(velocity: CGPoint(x: 300, y: 0)))
+        XCTAssertFalse(view.pageTurn.shouldBegin(velocity: CGPoint(x: -300, y: 0)))
+    }
+
     func testViewportReopenRestoresFitAcrossSizesAndPreservesLegacyZoom() throws {
         let noteID = UUID(), pageID = UUID()
         let key = "viewport-\(noteID)-\(pageID)"
@@ -185,7 +203,10 @@ final class PaginationTests: XCTestCase {
             view.pageTurn.drag(pan)
             try await waitUntil { session.page?.id == target && !session.busy && !view.pageTurn.committing }
             XCTAssertEqual((session.canvas.delegate as? WritingCanvas.Coordinator)?.pageID, target)
-            XCTAssertEqual(view.pageTurn.shouldBegin(velocity: CGPoint(x: 300, y: 0)), canPageAgain)
+            if canPageAgain { XCTAssertTrue(view.pageTurn.shouldBegin(velocity: CGPoint(x: 300, y: 0))) }
+            else if view.canvas.contentOffset.x > -view.canvas.adjustedContentInset.left + 1 {
+                XCTAssertFalse(view.pageTurn.shouldBegin(velocity: CGPoint(x: 300, y: 0)))
+            }
             let geometry = "Turn \(completed), target size \(view.pageSize), zoom \(view.canvas.zoomScale), offset \(view.canvas.contentOffset), insets \(view.canvas.contentInset)"
             XCTAssertEqual(incomingFrame.minX, view.paper.frame.minX, accuracy: 1, geometry)
             XCTAssertEqual(incomingFrame.minY, view.paper.frame.minY, accuracy: 1, geometry)

@@ -11,6 +11,16 @@ final class ClipboardAndFoldersTests: XCTestCase {
         let combined = InkDrawing(strokes: original.strokes + pasted.strokes)
         XCTAssertEqual(try InkDrawing(data: combined.encodedData()).strokes.count, 2)
     }
+    func testFingerPasteCentersContentOnTheTouchAndStaysOnThePage() throws {
+        let data = try InkDrawing(strokes: [stroke(at: CGPoint(x: 20, y: 30))]).encodedData()   // bounds ≈ 38 x 28
+        let page = CGSize(width: 600, height: 800)
+        let top = try DocumentClipboard.decodeInk(data, at: CGPoint(x: 300, y: 400), pageSize: page)
+        let centered = try DocumentClipboard.decodeInk(data, at: CGPoint(x: 300, y: 400), pageSize: page, centered: true)
+        XCTAssertEqual(centered.bounds.midX, 300, accuracy: 0.5); XCTAssertEqual(centered.bounds.midY, 400, accuracy: 0.5)
+        XCTAssertEqual(top.bounds.minX, 300, accuracy: 0.5)
+        let corner = try DocumentClipboard.decodeInk(data, at: .zero, pageSize: page, centered: true)
+        XCTAssertGreaterThanOrEqual(corner.bounds.minX, 0); XCTAssertGreaterThanOrEqual(corner.bounds.minY, 0)
+    }
     private func stroke(at origin: CGPoint) -> InkStroke {
         let points = [origin, CGPoint(x: origin.x + 30, y: origin.y + 20)].enumerated().map { index, point in
             InkStrokePoint(location: point, timeOffset: Double(index), size: CGSize(width: 4, height: 4), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)

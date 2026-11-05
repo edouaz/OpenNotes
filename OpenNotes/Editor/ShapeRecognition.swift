@@ -1,5 +1,5 @@
 import Foundation
-import UIKit
+import CoreGraphics
 
 // Conservative, explicit recognition: ambiguous strokes remain unchanged.
 enum ShapeRecognition {
@@ -115,20 +115,5 @@ enum ShapeRecognition {
         } / CGFloat(points.count)
         guard error < diagonal * 0.025 else { return nil }
         return (0...32).map { position(CGFloat($0) / 32) }
-    }
-}
-@MainActor
-extension EditorSession {
-    func recognizeShape() {
-        let drawing = canvas.drawing
-        guard let last = drawing.strokes.last,
-              let points = ShapeRecognition.recognize(last.path.map { $0.location.applying(last.transform) }) else {
-            error = "Ambiguous stroke: draw a line, rectangle or closed ellipse."; return
-        }
-        let controls = points.enumerated().map { index, point in
-            InkStrokePoint(location: point, timeOffset: Double(index) * 0.01, size: last.path.first?.size ?? CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
-        }
-        let replacement = InkStroke(ink: last.ink, path: InkStrokePath(controlPoints: controls, creationDate: Date()))
-        replaceDrawing(InkDrawing(strokes: Array(drawing.strokes.dropLast()) + [replacement]), actionName: "Smooth stroke")
     }
 }

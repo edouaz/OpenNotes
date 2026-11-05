@@ -110,6 +110,162 @@ final class StorageAndPDFTests: XCTestCase {
         var malicious = archive; malicious.resources["../secret"] = Data()
         XCTAssertThrowsError(try malicious.validate())
     }
+    func testPendingJournalRecoversInterruptedMetadataCommit() async throws {
+        let store = await makeStore()
+        let created = await store.create()
+        let id = try XCTUnwrap(created)
+        let flushed = await store.flush()
+        XCTAssertTrue(flushed)
+        var pending = store.library
+        pending.notes[0].title = "Recovered journal"
+        let root = await store.disk.root
+        let journal = root.appendingPathComponent("library.pending.json")
+        try JSONEncoder().encode(pending).write(to: journal, options: .atomic)
+        try Data("interrupted metadata".utf8).write(to: root.appendingPathComponent("library.json"))
+        let recovered = try await store.disk.load()
+        XCTAssertEqual(recovered.note(id: id)?.title, "Recovered journal")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
+        let reopened = try await store.disk.load()
+        XCTAssertEqual(reopened, recovered)
+    }
+
+    func testIncompleteJournalDoesNotOverwriteCommittedMetadata() async throws {
+        let store = await makeStore()
+        _ = await store.create()
+        let flushed = await store.flush()
+        XCTAssertTrue(flushed)
+        let root = await store.disk.root
+        let committedURL = root.appendingPathComponent("library.json")
+        let committed = try Data(contentsOf: committedURL)
+        var pending = store.library
+        pending.pages[0].drawingResourceID = "missing.drawing"
+        let journal = root.appendingPathComponent("library.pending.json")
+        try JSONEncoder().encode(pending).write(to: journal, options: .atomic)
+        do { _ = try await store.disk.load(); XCTFail("Incomplete commit accepted") } catch { }
+        XCTAssertEqual(try Data(contentsOf: committedURL), committed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    func testExplicitBackupRestoreDiscardsPendingJournal() async throws {
+        let store = await makeStore()
+        let created = await store.create()
+        let id = try XCTUnwrap(created)
+        let flushed = await store.flush()
+        XCTAssertTrue(flushed)
+        let root = await store.disk.root
+        let backup = store.library
+        try JSONEncoder().encode(backup).write(to: root.appendingPathComponent("library.backup.json"))
+        var pending = backup
+        pending.notes[0].title = "Abandoned pending revision"
+        try JSONEncoder().encode(pending).write(to: root.appendingPathComponent("library.pending.json"))
+        _ = try await store.disk.restoreBackup()
+        let reopened = try await store.disk.load()
+        XCTAssertEqual(reopened.note(id: id)?.title, backup.note(id: id)?.title)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("library.pending.json").path))
+    }
+
+    func testCloudReplacementPreservesCanonicalIDsAndRejectsStaleLocalVersion() async throws {
+        let store = await makeStore()
+        let created = await store.create()
+        let id = try XCTUnwrap(created)
+        let editor = EditorSession(store: store, noteID: id)
+        await editor.open()
+        var remote = try await store.archive(id)
+        let expected = try XCTUnwrap(store.library.note(id: id))
+        let originalResource = remote.pages[0].drawingResourceID
+        remote.note.title = "Edited remotely"
+        remote.note.updatedAt = expected.updatedAt.addingTimeInterval(1)
+        let stroke = redStroke()
+        remote.resources[originalResource] = InkDrawing(strokes: [stroke]).dataRepresentation()
+        let applied = try await store.applyCloudArchive(remote, expected: expected)
+        XCTAssertEqual(applied, id)
+        XCTAssertEqual(store.library.notes.count, 1)
+        XCTAssertEqual(store.library.note(id: id)?.pageIDs, remote.note.pageIDs)
+        XCTAssertEqual(store.library.page(id: remote.pages[0].id)?.noteID, id)
+        XCTAssertNotEqual(store.library.page(id: remote.pages[0].id)?.drawingResourceID, originalResource)
+        XCTAssertEqual(editor.drawing.strokes.map(\.id), [stroke.id])
+        XCTAssertEqual(editor.page?.id, remote.pages[0].id)
+        let reopened = try await store.disk.load()
+        XCTAssertEqual(reopened.note(id: id)?.title, "Edited remotely")
+        do { _ = try await store.applyCloudArchive(remote, expected: expected); XCTFail("Stale cloud update accepted") } catch { }
+        XCTAssertEqual(store.library, reopened)
+        editor.changed(InkDrawing())
+        let latest = store.library.note(id: id)
+        do { _ = try await store.applyCloudArchive(remote, expected: latest); XCTFail("Pending handwriting overwritten") } catch { }
+        XCTAssertTrue(editor.dirty)
+        XCTAssertTrue(editor.drawing.strokes.isEmpty)
+    }
+    private func redStroke() -> InkStroke {
+        let points = [CGPoint(x: 80, y: 120), CGPoint(x: 420, y: 120)].enumerated().map { index, point in
+            InkStrokePoint(location: point, timeOffset: Double(index), size: CGSize(width: 16, height: 16), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+        }
+        return InkStroke(ink: InkInk(.pen, color: .red), path: InkStrokePath(controlPoints: points, creationDate: Date()))
+    }
+
+    func testFailedMetadataSavePreservesCommittedInkAndRetriesPendingRevision() async throws {
+        let store = await makeStore()
+        let created = await store.create()
+        let id = try XCTUnwrap(created)
+        let editor = EditorSession(store: store, noteID: id); await editor.open()
+        editor.changed(InkDrawing())
+        let initialSaved = await editor.flush(); XCTAssertTrue(initialSaved)
+        let originalPage = try XCTUnwrap(editor.page)
+        let committedInk = try await store.disk.read(originalPage.drawingResourceID)
+        let originalInk = try XCTUnwrap(committedInk)
+        let root = await store.disk.root
+        let library = root.appendingPathComponent("library.json")
+        let originalLibrary = try Data(contentsOf: library)
+        defer {
+            try? FileManager.default.removeItem(at: library)
+            try? originalLibrary.write(to: library, options: .atomic)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.removeItem(at: library)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: false)
+        let stroke = redStroke()
+        editor.changed(InkDrawing(strokes: [stroke]))
+        let failed = await editor.flush()
+        XCTAssertFalse(failed)
+        XCTAssertTrue(editor.dirty, "A failed metadata save must retain the pending ink")
+        let preserved = try await store.disk.read(originalPage.drawingResourceID)
+        XCTAssertEqual(preserved, originalInk, "A failed revision must not overwrite the committed drawing")
+        try FileManager.default.removeItem(at: library)
+        try originalLibrary.write(to: library, options: .atomic)
+        let retried = await editor.flush()
+        XCTAssertTrue(retried); XCTAssertFalse(editor.dirty)
+        let reopenedStore = LibraryStore(root: root); await reopenedStore.load()
+        let archive = try await reopenedStore.archive(id)
+        let resource = try XCTUnwrap(archive.resources[try XCTUnwrap(archive.pages.first).drawingResourceID])
+        let restored = try InkDrawing(data: resource)
+        XCTAssertEqual(restored.strokes.map(\.id), [stroke.id])
+    }
+
+    func testExportIncludesLatestPendingInk() async throws {
+        let store = await makeStore()
+        let created = await store.create()
+        let id = try XCTUnwrap(created)
+        let editor = EditorSession(store: store, noteID: id); await editor.open()
+        let stroke = redStroke()
+        editor.changed(InkDrawing(strokes: [stroke]))
+        XCTAssertTrue(editor.dirty)
+        editor.cloudDocumentEditorPresented = true
+        let archive = try await store.archive(id)
+        XCTAssertFalse(editor.dirty)
+        let page = try XCTUnwrap(archive.pages.first)
+        let drawing = try InkDrawing(data: XCTUnwrap(archive.resources[page.drawingResourceID]))
+        XCTAssertEqual(drawing.strokes.map(\.id), [stroke.id])
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+        defer { try? FileManager.default.removeItem(at: output) }
+        try PageRenderer.export(archive, indices: 0...0, output: output)
+        let pdfPage = try XCTUnwrap(PDFDocument(url: output)?.page(at: 0))
+        let image = try XCTUnwrap(pdfPage.thumbnail(of: CGSize(width: 397, height: 562), for: .mediaBox).cgImage)
+        var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let context = try XCTUnwrap(CGContext(data: &pixels, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let hasRedInk = stride(from: 0, to: pixels.count, by: 4).contains { pixels[$0] > 180 && pixels[$0 + 1] < 80 && pixels[$0 + 2] < 80 }
+        XCTAssertTrue(hasRedInk, "The exported PDF must visibly contain the pending red stroke")
+    }
+
     func testImageElementsSearchAndCustomPaperPersistence() async throws {
         let store = await makeStore()
         let image = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 200)).image { context in

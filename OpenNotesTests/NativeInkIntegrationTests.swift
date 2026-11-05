@@ -87,7 +87,8 @@ final class NativeInkIntegrationTests: XCTestCase {
         let saved = await editor.flush()
         XCTAssertTrue(saved)
         XCTAssertNil(editor.error)
-        let persisted = try await store.disk.read(page.drawingResourceID)
+        let committedResource = try XCTUnwrap(store.library.page(id: page.id)?.drawingResourceID)
+        let persisted = try await store.disk.read(committedResource)
         XCTAssertEqual(persisted, finalBytes)
 
         let reopenedStore = LibraryStore(root: root)
@@ -108,7 +109,7 @@ final class NativeInkIntegrationTests: XCTestCase {
         XCTAssertFalse(invalidSaved)
         XCTAssertNotNil(editor.error)
         XCTAssertTrue(editor.dirty)
-        let intact = try await store.disk.read(page.drawingResourceID)
+        let intact = try await store.disk.read(committedResource)
         XCTAssertEqual(intact, finalBytes, "Failed encoding must never overwrite the last valid page")
     }
 

@@ -39,7 +39,7 @@ final class TiledPaperView: UIView {
                     guard !Task.isCancelled else { return nil as CGImage? }
                     let size = PageRenderer.size(page)
                     return PageRenderer.image(page, data: artwork.data, drawing: drawing, resources: artwork.resources,
-                        scale: min(1, 1400 / max(size.width, size.height))).cgImage
+                        pdfPage: artwork.pdfPage, images: artwork.images, scale: min(1, 1400 / max(size.width, size.height))).cgImage
                 }
                 let image = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
                 guard !Task.isCancelled, let self, self.previewGeneration == generation else { return }

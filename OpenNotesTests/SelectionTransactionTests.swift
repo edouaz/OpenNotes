@@ -54,6 +54,78 @@ final class SelectionTransactionTests: XCTestCase {
         XCTAssertEqual(snapshot.strokeIndices, [0])
         XCTAssertEqual(snapshot.elementIDs, [parent.id])
     }
+    func testStickySelectionDoesNotPickUpCoveredPageInk() {
+        var page = NotePage(noteID: UUID(), index: 0, format: .a4Portrait, template: .blank, drawingResourceID: "ink.drawing")
+        let note = PageElement(kind: .stickyNote, x: 100, y: 100, width: 160, height: 160)
+        page.elements = [note]
+        let background = stroke(CGPoint(x: 120, y: 150), CGPoint(x: 240, y: 150))
+        var owned = background; owned.id = UUID(); owned.parentID = note.id
+        let exposed = stroke(CGPoint(x: 80, y: 90), CGPoint(x: 280, y: 90))
+        let snapshot = SelectionMoveSnapshot(page: page, drawing: InkDrawing(strokes: [background, owned, exposed]),
+            path: UIBezierPath(rect: CGRect(x: 90, y: 90, width: 180, height: 180)), settings: EditorToolSettings())
+        XCTAssertEqual(snapshot.elementIDs, [note.id])
+        XCTAssertEqual(snapshot.strokeIndices, [1, 2])
+    }
+    func testOverlappingStickyTapSelectsOnlyTheVisibleNote() {
+        var page = NotePage(noteID: UUID(), index: 0, format: .a4Portrait, template: .blank, drawingResourceID: "ink.drawing")
+        let back = PageElement(kind: .stickyNote, x: 100, y: 100, width: 160, height: 160)
+        let front = PageElement(kind: .stickyNote, x: 120, y: 120, width: 160, height: 160)
+        page.elements = [back, front]
+        let hit = UIBezierPath(ovalIn: CGRect(x: 140, y: 140, width: 8, height: 8))
+        XCTAssertEqual(DocumentClipboard.selectedElements(page, inside: hit, settings: EditorToolSettings()).map(\.id), [front.id])
+        let exact = UIBezierPath(rect: front.visibleBounds)
+        XCTAssertEqual(SelectionMoveSnapshot(page: page, drawing: InkDrawing(), path: exact, settings: EditorToolSettings()).elementIDs, [front.id])
+    }
+    func testHiddenResizeHandlesKeepSelectionMovable() {
+        let view = PageSelectionView(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
+        view.installSelection(UIBezierPath(rect: CGRect(x: 50, y: 50, width: 100, height: 100)))
+        XCTAssertFalse(view.showsResizeHandles)
+        XCTAssertTrue(view.subviews.allSatisfy(\.isHidden))
+        XCTAssertTrue(view.hitTest(CGPoint(x: 50, y: 50), with: nil) === view)
+        view.showsResizeHandles = true
+        XCTAssertTrue(view.subviews.contains { !$0.isHidden && $0.isUserInteractionEnabled })
+        XCTAssertTrue(view.subviews.filter { !$0.isHidden }.allSatisfy { $0.bounds.size == CGSize(width: 44, height: 44) })
+        view.showsResizeHandles = false
+        XCTAssertTrue(view.subviews.allSatisfy(\.isHidden))
+        XCTAssertTrue(view.subviews.allSatisfy { !$0.isUserInteractionEnabled })
+        XCTAssertTrue(view.hitTest(CGPoint(x: 50, y: 50), with: nil) === view)
+        var moved = false
+        view.moved = { _, _ in moved = true }
+        view.updateDrag(state: .began, point: CGPoint(x: 80, y: 80), translation: .zero)
+        view.updateDrag(state: .ended, point: CGPoint(x: 90, y: 90), translation: CGPoint(x: 10, y: 10))
+        XCTAssertTrue(moved)
+        view.installSelection(UIBezierPath(rect: CGRect(x: 50, y: 50, width: 100, height: 100)))
+        view.showsResizeHandles = true
+        XCTAssertTrue(view.subviews.contains { !$0.isHidden })
+    }
+    func testFinishedMoveDoesNotRestoreSelectionAfterLeavingAndReturningToLasso() async throws {
+        let suite = "lasso-lifecycle-\(UUID())"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        defer { preferences.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let session = EditorSession(store: LibraryStore(root: root), noteID: UUID(), preferences: preferences)
+        session.selectedTool = .lasso
+        let view = PageScrollView(canvas: session.canvas)
+        var completion: CheckedContinuation<Bool, Never>?
+        view.configureSelection(true, session: session, immediate: false, moved: { _, _ in
+            await withCheckedContinuation { completion = $0 }
+        }, selected: nil)
+        let original = try XCTUnwrap(view.subviews.compactMap { $0 as? PageSelectionView }.first)
+        let path = UIBezierPath(rect: CGRect(x: 50, y: 50, width: 100, height: 100))
+        original.installSelection(path)
+        original.moved?(path, CGPoint(x: 10, y: 10))
+        await Task.yield()
+        let pending = try XCTUnwrap(completion)
+        session.selectedTool = .pen
+        view.configureSelection(false, session: session, immediate: false, selected: nil)
+        session.selectedTool = .lasso
+        view.configureSelection(true, session: session, immediate: false, selected: nil)
+        let fresh = try XCTUnwrap(view.subviews.compactMap { $0 as? PageSelectionView }.first)
+        XCTAssertFalse(original === fresh)
+        pending.resume(returning: true)
+        for _ in 0..<3 { await Task.yield() }
+        XCTAssertTrue(fresh.layer.sublayers?.compactMap { $0 as? CAShapeLayer }.allSatisfy { $0.path == nil } == true)
+    }
     func testSnapUsesPageAxesAndCanBeDisabled() {
         var page = NotePage(noteID: UUID(), index: 0, format: .a4Portrait, template: .blank, drawingResourceID: "ink.drawing")
         page.width = 400; page.height = 500

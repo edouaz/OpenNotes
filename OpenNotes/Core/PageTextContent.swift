@@ -23,8 +23,11 @@ struct PageTextContent: Codable, Equatable, Sendable {
 }
 
 extension NotePage {
-    var searchableText: String {
+    private var searchableParts: [String] {
         ([pdfText?.text, text, ocrText == nil ? recognizedText : nil, ocrText?.drawingRevision == (drawingRevision ?? 0) ? ocrText?.text : nil] + (elements ?? []).filter { $0.kind == .text || $0.kind == .stickyNote }.map { Optional($0.text) })
-            .compactMap { $0 }.joined(separator: "\n")
+            .compactMap { $0 }
     }
+    var searchableText: String { searchableParts.joined(separator: "\n") }
+    // Same sources as searchableText, without allocating one joined copy of every page's text per keystroke.
+    func matches(_ query: String) -> Bool { searchableParts.contains { $0.localizedStandardContains(query) } }
 }

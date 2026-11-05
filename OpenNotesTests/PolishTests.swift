@@ -191,7 +191,7 @@ final class PolishTests: XCTestCase {
         let c = Task { await session.open(third) }
         await b.value; await c.value
         XCTAssertEqual(session.page?.id, third)
-        let bytes = try await store.disk.read(first.drawingResourceID)
+        let bytes = try await store.disk.read(try XCTUnwrap(store.library.page(id: first.id)?.drawingResourceID))
         XCTAssertEqual(try InkDrawing(data: XCTUnwrap(bytes)).strokes.count, 1)
         XCTAssertFalse(session.busy)
     }
@@ -209,7 +209,7 @@ final class PolishTests: XCTestCase {
         try FileManager.default.removeItem(at: folder)
         try FileManager.default.moveItem(at: moved, to: folder)
         let saved = await session.flush(); XCTAssertTrue(saved)
-        let bytes = try await store.disk.read(page.drawingResourceID)
+        let bytes = try await store.disk.read(try XCTUnwrap(store.library.page(id: page.id)?.drawingResourceID))
         XCTAssertEqual(try InkDrawing(data: XCTUnwrap(bytes)).strokes.count, 1)
     }
     func testTabsPreserveSessionsAndClosingSaves() async throws {
@@ -224,7 +224,7 @@ final class PolishTests: XCTestCase {
         XCTAssertEqual(model.tabs, [a, b]); XCTAssertTrue(model.session(a) === session)
         await model.close(a)
         XCTAssertEqual(model.active, b); XCTAssertEqual(model.tabs, [b])
-        let bytes = try await store.disk.read(page.drawingResourceID)
+        let bytes = try await store.disk.read(try XCTUnwrap(store.library.page(id: page.id)?.drawingResourceID))
         XCTAssertEqual(try InkDrawing(data: XCTUnwrap(bytes)).strokes.count, 1)
         XCTAssertNotNil(store.library.note(id: a))
         await model.close(b)

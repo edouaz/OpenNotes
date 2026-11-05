@@ -47,8 +47,14 @@ final class InteractivePageTurn: NSObject, UIGestureRecognizerDelegate {
         return shouldBegin(velocity: gesture.velocity(in: view))
     }
     func shouldBegin(velocity: CGPoint) -> Bool {
-        guard let view, !view.canvas.hasActiveStroke, !disabled, !committing, adjacent == nil, !view.isPinching, !view.canvas.isZooming,
-              view.canvas.zoomScale <= view.canvas.minimumZoomScale + 0.02 else { return false }
+        guard let view, !view.canvas.hasActiveStroke, !disabled, !committing, adjacent == nil, !view.isPinching, !view.canvas.isZooming else { return false }
+        if view.canvas.zoomScale > view.canvas.minimumZoomScale + 0.02 {
+            guard !view.verticalPaging, abs(velocity.x) > abs(velocity.y) else { return false }
+            let scroll = view.canvas
+            let left = -scroll.adjustedContentInset.left
+            let right = max(left, scroll.contentSize.width - scroll.bounds.width + scroll.adjustedContentInset.right)
+            return velocity.x > 0 ? scroll.contentOffset.x <= left + 1 : scroll.contentOffset.x >= right - 1
+        }
         return view.verticalPaging ? abs(velocity.y) > abs(velocity.x) : abs(velocity.x) > abs(velocity.y)
     }
     static func shouldCommit(progress: CGFloat, speed: CGFloat, hasPage: Bool, canCreate: Bool) -> Bool {

@@ -50,7 +50,9 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
         deleteButton.accessibilityIdentifier = "image.delete"
         deleteButton.addTarget(self, action: #selector(deleteImage), for: .touchUpInside)
         addSubview(deleteButton)
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(selectImage)))
+        let tap = UITapGestureRecognizer(target: self, action: #selector(selectImage))
+        tap.cancelsTouchesInView = false
+        addGestureRecognizer(tap)
         addInteraction(UIContextMenuInteraction(delegate: self))
         isAccessibilityElement = true
         accessibilityLabel = "Image"
@@ -67,6 +69,7 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
         ]
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func accessibilityActivate() -> Bool { selectImage(); return true }
     func acceptsImageDrag(at point: CGPoint) -> Bool {
         !showsHandles || (!handles.contains { $0.frame.contains(point) } && !deleteButton.frame.contains(point))
     }
@@ -90,7 +93,18 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
                            CGPoint(x: 0, y: bounds.midY), CGPoint(x: bounds.width, y: bounds.midY), CGPoint(x: bounds.midX, y: 0), CGPoint(x: bounds.midX, y: bounds.height)]
             handle.frame = CGRect(x: centers[corner].x - 22, y: centers[corner].y - 22, width: 44, height: 44)
         }
-        deleteButton.frame = CGRect(x: bounds.width - 44, y: -50, width: 44, height: 44)
+        var origin = CGPoint(x: -44, y: -44)
+        if let superview {
+            let viewport = convert(superview.bounds, from: superview)
+            origin.x = max(origin.x, viewport.minX)
+            origin.y = max(origin.y, viewport.minY)
+            if CGRect(origin: origin, size: CGSize(width: 44, height: 44)).intersects(handles[0].frame) {
+                origin.x = 22
+            }
+            origin.x = min(origin.x, viewport.maxX - 44)
+            origin.y = min(origin.y, viewport.maxY - 44)
+        }
+        deleteButton.frame = CGRect(origin: origin, size: CGSize(width: 44, height: 44))
     }
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in

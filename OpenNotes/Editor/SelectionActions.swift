@@ -3,10 +3,11 @@ import UIKit
 @MainActor
 extension EditorSession {
     func pasteSelection(at point: CGPoint) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard let data = UIPasteboard.general.data(forPasteboardType: DocumentClipboard.selectionType) else { return false }
         guard !isReadOnly, await flush(), let page else { return true }
         do {
-            let (ink, elements, assets) = try DocumentClipboard.decode(data, on: page, at: point)
+            let (ink, elements, assets) = try DocumentClipboard.decode(data, on: page, at: point, centered: true)
             for (name, data) in assets { try await store.disk.write(data, name: name) }
             guard self.page?.id == page.id else { throw CocoaError(.userCancelled) }
             resources.merge(assets) { _, new in new }
@@ -17,6 +18,7 @@ extension EditorSession {
     }
 
     func selectionAction(_ action: PageSelectionAction, path: UIBezierPath) async {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard !isReadOnly, await flush(), let page else { return }
         let snapshot = SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
         guard !snapshot.isEmpty else { return }
@@ -91,8 +93,9 @@ extension EditorSession {
     }
 
     @discardableResult
-    func affineSelection(inside path: UIBezierPath, scale: CGFloat, rotation: CGFloat, scaleY: CGFloat? = nil, anchor: CGPoint? = nil) async -> Bool {
-        guard !isReadOnly, scale.isFinite, rotation.isFinite, (0.1...10).contains(scale), await flush(), let page else { return false }
+    func affineSelection(inside path: UIBezierPath, scale: CGFloat, rotation: CGFloat, scaleY: CGFloat? = nil, anchor: CGPoint? = nil, durable: Bool = true) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
+        guard !isReadOnly, scale.isFinite, rotation.isFinite, (0.1...10).contains(scale), await prepareEdit(durable: durable), let page else { return false }
         let snapshot = SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
         guard !snapshot.isEmpty, !snapshot.containsLockedObjects else { return false }
         let sy = scaleY ?? scale
@@ -117,6 +120,6 @@ extension EditorSession {
             snapshot.strokeIndices.contains(index) ? InkDrawing(strokes: [stroke]).transformed(using: transform).strokes[0] : stroke
         }
         replaceContent(InkDrawing(strokes: ink), elements: elements, actionName: rotation == 0 ? "Resize selection" : "Rotate selection")
-        return await flush()
+        return durable ? await flush() : true
     }
 }

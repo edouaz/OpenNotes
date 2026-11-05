@@ -25,6 +25,22 @@ final class LibraryWorkspaceInteractionTests: XCTestCase {
         app.terminate()
     }
 
+    func testSyncIndicatorOpensAccountDetails() {
+        let indicator = app.buttons["library.syncStatus"]
+        XCTAssertTrue(indicator.waitForExistence(timeout: 5))
+        XCTAssertTrue(indicator.isHittable)
+        XCTAssertGreaterThanOrEqual(indicator.frame.height, 44)
+        XCTAssertLessThan(indicator.frame.midX, app.frame.midX)
+        XCTAssertGreaterThan(indicator.frame.midY, app.frame.midY)
+        indicator.tap()
+        XCTAssertTrue(app.navigationBars["Account and connections"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Local copies"].exists)
+        XCTAssertTrue(app.staticTexts["Last successful sync"].exists)
+        screenshot("Account backup and sync details")
+        app.buttons["Close"].tap()
+        XCTAssertTrue(indicator.waitForExistence(timeout: 5))
+    }
+
     func testTabMenuRenamePersistsAndClosingPreservesNotebooks() throws {
         let token = UUID().uuidString.prefix(8)
         let firstTitle = "Voyage \(token)"
@@ -67,13 +83,82 @@ final class LibraryWorkspaceInteractionTests: XCTestCase {
         screenshot("Notebooks preserved after closing their tabs")
     }
 
+    func testMovingSelectedNotebooksToTrashCanBeCancelledAndRestored() throws {
+        let token = UUID().uuidString.prefix(8)
+        var notebooks: [(id: String, title: String)] = []
+        for index in 1...3 {
+            let title = "Bulk trash \(index) \(token)"
+            let id = try createNotebook(title: title)
+            notebooks.append((id, title))
+            returnToLibrary()
+        }
+
+        let select = app.buttons["library.select"]
+        reveal(select, towardTop: true); select.tap()
+        for notebook in notebooks.prefix(2) {
+            let card = app.buttons["library.note.\(notebook.id)"]
+            reveal(card); card.tap()
+            XCTAssertEqual(card.value as? String, "Selected")
+        }
+        let delete = app.buttons["library.delete"]
+        reveal(delete, towardTop: true); delete.tap()
+        let confirmation = app.alerts["Move 2 notebooks to Trash?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.buttons["Move to Trash"].isHittable)
+        confirmation.buttons["Cancel"].tap()
+        waitUntilGone(confirmation)
+        for notebook in notebooks.prefix(2) {
+            let card = app.buttons["library.note.\(notebook.id)"]
+            XCTAssertTrue(card.exists)
+            XCTAssertEqual(card.value as? String, "Selected")
+        }
+        XCTAssertTrue(app.buttons["library.note.\(notebooks[2].id)"].exists)
+
+        reveal(delete, towardTop: true); delete.tap()
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Move to Trash"].tap()
+        for notebook in notebooks.prefix(2) { waitUntilGone(app.buttons["library.note.\(notebook.id)"]) }
+        XCTAssertTrue(app.buttons["library.note.\(notebooks[2].id)"].exists)
+
+        app.terminate(); app.launch(); returnToLibrary()
+        selectFilter("Trash")
+        for notebook in notebooks.prefix(2) {
+            let card = app.buttons["library.note.\(notebook.id)"]
+            XCTAssertTrue(card.waitForExistence(timeout: 5))
+            XCTAssertEqual(card.value as? String, "In Trash")
+            let actions = app.buttons["Actions for \(notebook.title)"]
+            reveal(actions); actions.tap()
+            app.buttons["Restore notebook"].tap()
+            waitUntilGone(card)
+        }
+        XCTAssertFalse(app.buttons["library.note.\(notebooks[2].id)"].exists)
+        selectFilter("Documents")
+        for notebook in notebooks {
+            XCTAssertTrue(app.buttons["library.note.\(notebook.id)"].waitForExistence(timeout: 5))
+        }
+    }
+
+    private func selectFilter(_ title: String) {
+        let filter = app.buttons["library.filter"]
+        if filter.exists { reveal(filter, towardTop: true); filter.tap(); app.buttons[title].firstMatch.tap() }
+        else { app.buttons[title].firstMatch.tap() }
+        if title == "Trash" { XCTAssertTrue(app.navigationBars["Trash"].waitForExistence(timeout: 5)) }
+        else { XCTAssertTrue(app.buttons["library.select"].waitForExistence(timeout: 5)) }
+    }
+
     private var options: XCUIElementQuery {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.options."))
     }
 
-    private func createNotebook() throws -> String {
+    private func createNotebook(title: String? = nil) throws -> String {
         let create = app.buttons["library.create"]
-        reveal(create, towardTop: true); create.tap(); XCTAssertTrue(app.buttons["library.new.confirm"].waitForExistence(timeout: 5)); app.buttons["library.new.confirm"].tap()
+        reveal(create, towardTop: true); create.tap()
+        XCTAssertTrue(app.buttons["library.new.confirm"].waitForExistence(timeout: 5))
+        if let title {
+            let field = app.textFields["library.new.title"]
+            field.tap(); field.typeText(title)
+        }
+        app.buttons["library.new.confirm"].tap()
         XCTAssertTrue(app.buttons["editor.pages"].waitForExistence(timeout: 10))
         let appended = try XCTUnwrap(options.allElementsBoundByIndex.last,
                                     "The tab flow requires an iPad at regular width")
@@ -131,9 +216,10 @@ final class LibraryWorkspaceInteractionTests: XCTestCase {
     }
 
     private func reveal(_ element: XCUIElement, towardTop: Bool = false) {
-        let scroll = app.scrollViews.containing(.button, identifier: "library.create").firstMatch
         for _ in 0..<12 {
             if element.exists, element.isHittable, app.frame.contains(element.frame) { return }
+            let libraryScroll = app.scrollViews.containing(.button, identifier: "library.create").firstMatch
+            let scroll = libraryScroll.exists ? libraryScroll : app.scrollViews.firstMatch
             guard scroll.exists else { break }
             let up = element.exists ? element.frame.midY < scroll.frame.midY : towardTop
             if up { scroll.swipeDown() } else { scroll.swipeUp() }

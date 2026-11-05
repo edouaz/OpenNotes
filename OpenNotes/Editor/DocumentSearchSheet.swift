@@ -8,7 +8,7 @@ struct DocumentSearchSheet: View {
     @State private var indexing = false
     var results: [NotePage] {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-        return store.library.pages(in: session.noteID).filter { $0.searchableText.localizedStandardContains(query) }
+        return store.library.pages(in: session.noteID).filter { $0.matches(query) }
     }
     var body: some View {
         NavigationStack {

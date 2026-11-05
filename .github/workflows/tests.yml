@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Check isolated shape recognition
+        run: sh scripts/test-shape-recognition.sh
       - name: Check website appearance
         run: node docs/tests/theme.test.cjs
       - name: Check generated project

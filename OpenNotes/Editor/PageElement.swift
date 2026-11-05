@@ -21,4 +21,12 @@ struct PageElement: Codable, Identifiable, Equatable, Sendable {
     var strokeWidth: Double?
     var strokeColorHex: String?
     var fillColorHex: String?
+    var stickyCornerRadius: Double?
+    var stickyOpacity: Double?
+    var stickyShadow: Double?
+
+    var stickyRadius: Double { stickyCornerRadius.flatMap { $0.isFinite ? min(24, max(0, $0)) : nil } ?? 0 }
+    var stickyBackgroundOpacity: Double { stickyOpacity.flatMap { $0.isFinite ? min(1, max(0, $0)) : nil } ?? 1 }
+    var stickyShadowOpacity: Double { stickyShadow.flatMap { $0.isFinite ? min(0.3, max(0, $0)) : nil } ?? 0 }
+    var stickyBorderWidth: Double { strokeWidth.flatMap { $0.isFinite ? min(16, max(0, $0)) : nil } ?? 0 }
 }

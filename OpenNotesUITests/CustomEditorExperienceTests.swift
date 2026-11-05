@@ -40,12 +40,16 @@ final class CustomEditorExperienceTests: XCTestCase {
             XCTAssertTrue(button.isSelected)
         }
         app.buttons["editor.tool.pen"].tap()
-        app.buttons["editor.toolOptions"].tap()
-        XCTAssertTrue(app.navigationBars["Tool options"].waitForExistence(timeout: 5))
-        let width = app.sliders["Stroke width"]
+        app.buttons["editor.tool.pen"].tap()
+        XCTAssertTrue(app.navigationBars["Instrument"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+        let preset = app.buttons["editor.width.2"]
+        preset.tap()
+        if !app.sliders["Thickness"].waitForExistence(timeout: 1) { preset.tap() }
+        let width = app.sliders["Thickness"]
         XCTAssertTrue(width.isHittable)
         width.adjust(toNormalizedSliderPosition: 0.75)
-        app.buttons["Done"].tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).tap()
         let canvas = app.scrollViews["editor.canvas"]
         XCTAssertGreaterThan(canvas.frame.height, app.frame.height * 0.5)
         app.buttons["editor.addPage"].tap()

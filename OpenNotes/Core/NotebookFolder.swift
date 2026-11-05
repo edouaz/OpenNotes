@@ -2,11 +2,15 @@
 import Foundation
 
 struct NotebookFolder: Identifiable, Codable, Equatable, Sendable {
+    /// Home folder of every NEW library. Shared across devices so synced notebooks land in the home folder on all of them
+    /// (the library UI treats `folders.first` as home; a per-device random ID made the other device's home unreachable).
+    static let homeID = UUID(uuidString: "0F0F0F0F-0000-4000-8000-000000000001")!
     let id: UUID
     var name: String
     var colorHex: String?
     var noteIDs: [UUID]
     var childFolderIDs: [UUID]
+    var deletedAt: Date?
 
     init(
         id: UUID = UUID(),

@@ -49,7 +49,58 @@ final class CanvasInteractionTests: XCTestCase {
         let active = try XCTUnwrap(images.first { $0.showsHandles })
         active.frame = CGRect(x: 10, y: 30, width: 200, height: 100); active.layoutIfNeeded()
         XCTAssertEqual(active.deleteButton.bounds.size, CGSize(width: 44, height: 44))
+        XCTAssertEqual(active.subviews.filter { $0.gestureRecognizers?.contains(where: { $0 is UIPanGestureRecognizer }) == true }.count, 8)
+        XCTAssertTrue(active.subviews.filter { $0.gestureRecognizers?.contains(where: { $0 is UIPanGestureRecognizer }) == true }.allSatisfy { $0.bounds.size == CGSize(width: 44, height: 44) })
     }
+    func testPencilOnlySelectionRoutesFingerBodyToCanvasButKeepsHandles() throws {
+        let view = PageScrollView(canvas: InkCanvasView())
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 400)
+        view.pageSize = CGSize(width: 400, height: 400); view.layoutIfNeeded()
+        view.configureSelection(true, immediate: false, selected: nil)
+        let selection = try XCTUnwrap(view.subviews.compactMap { $0 as? PageSelectionView }.first)
+        selection.installSelection(UIBezierPath(rect: CGRect(x: 80, y: 80, width: 160, height: 160)))
+        selection.showsResizeHandles = true
+        view.fingerScrollsSelection = true
+        let body = CGPoint(x: 150, y: 150)
+        let routed = view.hitTest(body, with: nil)
+        XCTAssertTrue(routed === view.canvas || routed?.isDescendant(of: view.canvas) == true)
+        XCTAssertTrue(selection.activeGestures.allSatisfy { $0.view === view })
+        XCTAssertTrue(selection.activeGestures.filter { $0 is UIPanGestureRecognizer || $0 is UITapGestureRecognizer }.allSatisfy { $0.allowedTouchTypes == [NSNumber(value: UITouch.TouchType.pencil.rawValue)] })
+        let corner = view.hitTest(CGPoint(x: 80, y: 80), with: nil)
+        XCTAssertTrue(corner?.isDescendant(of: selection) == true && corner !== selection)
+        view.fingerScrollsSelection = false
+        XCTAssertTrue(view.hitTest(body, with: nil) === selection)
+        XCTAssertTrue(selection.activeGestures.allSatisfy { $0.view === selection })
+        view.configureSelection(false, immediate: false, selected: nil)
+        XCTAssertTrue(selection.activeGestures.allSatisfy { $0.view == nil })
+    }
+
+    func testIdleImageDoesNotInterceptCanvasPan() throws {
+        var page = page()
+        page.elements = [PageElement(kind: .image, x: 30, y: 30, width: 120, height: 80)]
+        let view = PageScrollView(canvas: InkCanvasView())
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 400)
+        view.pageSize = PageRenderer.size(page); view.layoutIfNeeded()
+        var activated: UUID?
+        view.configureImages(page, images: [:], pencil: false, beginEditing: { activated = $0 }) { _, _ in }
+        let image = try XCTUnwrap(view.subviews.compactMap { $0 as? ImageHandlesView }.first)
+        let hit = view.hitTest(image.center, with: nil)
+        XCTAssertTrue(hit === view.canvas || hit?.isDescendant(of: view.canvas) == true)
+        XCTAssertTrue(image.accessibilityActivate())
+        XCTAssertEqual(activated, image.item.id)
+    }
+
+    func testImageDeleteRemainsVisibleAtViewportOriginWithoutCoveringCorner() throws {
+        let viewport = UIView(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
+        let image = ImageHandlesView(item: PageElement(kind: .image), image: nil)
+        image.frame = CGRect(x: 0, y: 0, width: 200, height: 100)
+        viewport.addSubview(image); image.layoutIfNeeded()
+        XCTAssertTrue(viewport.bounds.contains(image.convert(image.deleteButton.frame, to: viewport)))
+        let corner = try XCTUnwrap(image.subviews.first { $0.tag == 0 && $0.gestureRecognizers?.contains(where: { $0 is UIPanGestureRecognizer }) == true })
+        XCTAssertFalse(corner.frame.intersects(image.deleteButton.frame))
+        XCTAssertTrue(image.hitTest(.zero, with: nil) === corner)
+    }
+
     func testImageSidesResizeOneAxisAndKeepOppositeEdge() {
         for side in 4...7 {
             let image = ImageHandlesView(item: PageElement(kind: .image, x: 100, y: 100, width: 200, height: 100), image: nil)
@@ -68,7 +119,7 @@ final class CanvasInteractionTests: XCTestCase {
         XCTAssertTrue(image.acceptsImageDrag(at: CGPoint(x: 100, y: 50)))
         XCTAssertFalse(image.acceptsImageDrag(at: .zero))
         XCTAssertFalse(image.acceptsImageDrag(at: CGPoint(x: 200, y: 50)))
-        XCTAssertFalse(image.acceptsImageDrag(at: CGPoint(x: 178, y: -28)))
+        XCTAssertFalse(image.acceptsImageDrag(at: CGPoint(x: -28, y: -28)))
         image.showsHandles = false
         XCTAssertTrue(image.acceptsImageDrag(at: .zero))
     }

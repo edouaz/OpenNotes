@@ -4,23 +4,25 @@ enum EraserEditing {
     static func erase(_ drawing: InkDrawing, along points: [CGPoint], width: Double, mode: EditorToolSettings.EraserMode, erasePen: Bool = true, eraseHighlighter: Bool = true) -> InkDrawing {
         guard !points.isEmpty, width.isFinite, width > 0,
               points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return drawing }
-        let radius = CGFloat(width / 2)
+        let effectiveWidth = width + (mode == .standard ? 4 : 0)
+        let radius = CGFloat(effectiveWidth / 2)
         let sweep = CGMutablePath()
         sweep.move(to: points[0])
         for point in points.dropFirst() { sweep.addLine(to: point) }
-        let area: CGPath = points.count == 1
-            ? CGPath(ellipseIn: CGRect(x: points[0].x - radius, y: points[0].y - radius, width: width, height: width), transform: nil)
-            : sweep.copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        let area: CGPath = points.allSatisfy { $0 == points[0] }
+            ? CGPath(ellipseIn: CGRect(x: points[0].x - radius, y: points[0].y - radius, width: effectiveWidth, height: effectiveWidth), transform: nil)
+            : sweep.copy(strokingWithWidth: effectiveWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
         let strokes = drawing.strokes.flatMap { stroke -> [InkStroke] in
             guard stroke.isLocked != true else { return [stroke] }
             guard stroke.ink.inkType == .marker ? eraseHighlighter : erasePen else { return [stroke] }
             guard stroke.renderBounds.intersects(area.boundingBoxOfPath) else { return [stroke] }
-            var transform = stroke.transform
-            guard let paint = stroke.paintedPath.copy(using: &transform), paint.intersects(area) else { return [stroke] }
+            let transform = stroke.transform
+            let originalPaint = stroke.paintedPath
+            // Test in stroke space: transforming the small eraser area is far cheaper than copying the whole stroke path.
+            var inverse = transform.inverted()
+            guard let localArea = area.copy(using: &inverse), originalPaint.intersects(localArea) else { return [stroke] }
             if mode == .precision {
-                var inverse = transform.inverted()
-                guard let localArea = area.copy(using: &inverse) else { return [stroke] }
-                let remaining = stroke.paintedPath.subtracting(localArea)
+                let remaining = originalPaint.subtracting(localArea)
                 guard !remaining.isEmpty else { return [] }
                 var clipped = stroke
                 clipped.vectorOutline = InkVectorPath(remaining)
@@ -29,7 +31,7 @@ enum EraserEditing {
             if mode == .stroke || (mode == .intelligent && max(stroke.renderBounds.width, stroke.renderBounds.height) <= width) { return [] }
             let scale = max(hypot(transform.a, transform.b), hypot(transform.c, transform.d))
             func erased(_ sample: InkStrokePoint) -> Bool {
-                distance(sample.location.applying(transform), to: points) <= radius + (mode == .standard ? 2 : 0) + max(sample.size.width, sample.size.height) * scale / 2
+                distance(sample.location.applying(transform), to: points) <= radius + max(sample.size.width, sample.size.height) * scale / 2
             }
             var fragments: [InkStroke] = []
             for piece in stroke.paintedPaths() {
@@ -46,12 +48,10 @@ enum EraserEditing {
                     fragment.rawSamples = kept
                     // Painted pieces already contain the original pattern and taper geometry.
                     if var style = fragment.style { style.pattern = .solid; style.sharpness = 0; fragment.style = style }
-                    if stroke.vectorOutline != nil {
-                        fragment.vectorOutline = nil
-                        let clipped = fragment.paintedPath.intersection(stroke.paintedPath)
-                        guard !clipped.isEmpty else { kept = []; return }
-                        fragment.vectorOutline = InkVectorPath(clipped)
-                    }
+                    fragment.vectorOutline = nil
+                    let clipped = fragment.paintedPath.intersection(originalPaint)
+                    guard !clipped.isEmpty else { kept = []; return }
+                    fragment.vectorOutline = InkVectorPath(clipped)
                     fragments.append(fragment)
                     kept = []
                 }
@@ -73,6 +73,13 @@ enum EraserEditing {
             return fragments
         }
         return InkDrawing(strokes: strokes)
+    }
+
+    // Cheap geometry comparison; avoids JSON-encoding whole pages on the main thread.
+    static func changed(_ a: InkDrawing, _ b: InkDrawing) -> Bool {
+        a.strokes.count != b.strokes.count || zip(a.strokes, b.strokes).contains {
+            $0.id != $1.id || $0.vectorOutline != $1.vectorOutline || $0.path.controlPoints != $1.path.controlPoints
+        }
     }
 
     static func interpolate(_ a: InkStrokePoint, _ b: InkStrokePoint, _ t: CGFloat) -> InkStrokePoint {

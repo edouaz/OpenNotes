@@ -2,9 +2,12 @@ import UIKit
 
 enum PageSelectionAction { case preview, copyPhoto, copyInk, enlarge, shrink, deleteContent, copySelection, cutSelection, duplicateSelection, lockSelection, collapseSelection, bringFront, sendBack, editText, recolorSelection, formatText }
 
-final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
+final class PageSelectionView: UIView, UIEditMenuInteractionDelegate, UIGestureRecognizerDelegate {
     var selected: ((CGRect, UIBezierPath, PageSelectionAction) -> Void)?
     var immediate = false
+    /// Manipulation mode: handles are shown only after the user asks for them (long press or menu) and never persist.
+    var showsResizeHandles = false { didSet { updateHandles() } }
+    var manipulationChanged: ((Bool) -> Void)?
     var shape = EditorToolSettings.LassoShape.freeform
     var moveBegan: ((UIBezierPath) -> Void)?
     var moveChanged: ((CGPoint) -> CGPoint)?
@@ -19,6 +22,8 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
     var menuActions: ((UIBezierPath) -> [UIMenuElement])?
     private var handles: [UIView] = []
     private var freeResizeAllowed = false
+    // The eligibility check builds a full selection snapshot, so it runs only when handles are shown.
+    private var freeResizeStale = false
     private var transformOrigin = UIBezierPath()
     private var transformStart = CGPoint.zero
     private var pendingScale: CGFloat = 1
@@ -32,16 +37,55 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
     private var originalPath = UIBezierPath()
     private let outline = CAShapeLayer()
     private lazy var editMenu = UIEditMenuInteraction(delegate: self)
+    private lazy var pan = UIPanGestureRecognizer(target: self, action: #selector(drag(_:)))
+    private lazy var tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+    private lazy var hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+    private var passesBodyTouches = false
+    private var followed: (zoom: CGFloat, offset: CGPoint)?
+    /// The selection lives in screen space while it is drawn, but it must stay glued to the page.
+    /// Called on every scroll/zoom: re-projects every stored path from the previous viewport to the new one.
+    func follow(zoom: CGFloat, offset: CGPoint) {
+        defer { followed = (zoom, offset) }
+        guard let old = followed, old.zoom > 0, zoom > 0, old.zoom != zoom || old.offset != offset else { return }
+        let scale = zoom / old.zoom
+        let move = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+                                     tx: old.offset.x * scale - offset.x, ty: old.offset.y * scale - offset.y)
+        for stored in [path, originalPath, transformOrigin] { stored.apply(move) }
+        start = start.applying(move); transformStart = transformStart.applying(move); transformAnchor = transformAnchor.applying(move)
+        if !path.isEmpty { outline.path = path.cgPath }
+        updateHandles()
+    }
+    var activeGestures: [UIGestureRecognizer] { [pan, tap, hold] }
+    override var isUserInteractionEnabled: Bool {
+        didSet { activeGestures.forEach { $0.isEnabled = isUserInteractionEnabled } }
+    }
+    func hostGestures(on host: UIView?, pencilOnly: Bool) {
+        passesBodyTouches = pencilOnly
+        pan.allowedTouchTypes = pencilOnly ? [NSNumber(value: UITouch.TouchType.pencil.rawValue)] : []
+        tap.allowedTouchTypes = pan.allowedTouchTypes
+        for gesture in activeGestures {
+            let target = host ?? self
+            if gesture.view !== target { gesture.view?.removeGestureRecognizer(gesture); target.addGestureRecognizer(gesture) }
+        }
+    }
+    func detachGestures() { activeGestures.forEach { $0.view?.removeGestureRecognizer($0) } }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        !passesBodyTouches || touch.view?.isDescendant(of: self) != true
+    }
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return passesBodyTouches && hit === self ? nil : hit
+    }
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
         outline.fillColor = UIColor.systemBlue.withAlphaComponent(0.12).cgColor
         outline.strokeColor = UIColor.systemBlue.cgColor; outline.lineWidth = 2; outline.lineDashPattern = [6, 4]
         layer.addSublayer(outline)
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(drag(_:)))
         pan.maximumNumberOfTouches = 1
+        activeGestures.forEach { $0.delegate = self }
         addGestureRecognizer(pan)
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
+        addGestureRecognizer(tap)
         for index in 0..<9 {
             let handle = UIView(); handle.tag = index
             let dot = UIView(frame: CGRect(x: 17, y: 17, width: 10, height: 10))
@@ -52,7 +96,6 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
             handle.accessibilityLabel = index == 4 ? "Rotate selection" : "Scale selection"
             handle.isHidden = true; addSubview(handle); handles.append(handle)
         }
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
         hold.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         addGestureRecognizer(hold); addInteraction(editMenu)
         isAccessibilityElement = true
@@ -68,10 +111,24 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
         ]
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func clearSelection() { completed = false; path = UIBezierPath(); outline.path = nil; handles.forEach { $0.isHidden = true }; editMenu.dismissMenu() }
+    func clearSelection() {
+        completed = false; path = UIBezierPath(); outline.path = nil; editMenu.dismissMenu()
+        showsResizeHandles = false; handles.forEach { $0.isHidden = true }
+    }
+    var selectionBounds: CGRect { path.bounds }
+    func enterManipulation() {
+        guard completed, !immediate else { return }
+        Diagnostics.shared.record("lasso.manipulate")
+        editMenu.dismissMenu(); showsResizeHandles = true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        manipulationChanged?(true)
+    }
+
+    private var resumeManipulation = false
     func installSelection(_ selection: UIBezierPath) {
+        if resumeManipulation { showsResizeHandles = true; resumeManipulation = false }
         path = selection; completed = true; outline.path = path.cgPath
-        freeResizeAllowed = allowsFreeResize?(path) == true
+        freeResizeStale = true
         updateHandles()
         presentMenu()
     }
@@ -82,9 +139,8 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
     @objc private func held(_ gesture: UILongPressGestureRecognizer) {
         let point = gesture.location(in: self)
         guard gesture.state == .began else { return }
-        if completed && path.contains(point) {
-            editMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
-        } else { pasteMenuRequested?(point) }
+        if completed && path.contains(point) { enterManipulation() }
+        else { pasteMenuRequested?(point) }
     }
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
         if let menuActions { return UIMenu(children: menuActions(path)) }
@@ -104,10 +160,12 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
         editMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
     }
     private func updateHandles() {
+        if freeResizeStale, completed, showsResizeHandles { freeResizeAllowed = allowsFreeResize?(path) == true; freeResizeStale = false }
         let rect = path.bounds
         let centers = [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.midX, y: rect.minY - 30), CGPoint(x: rect.minX, y: rect.midY), CGPoint(x: rect.maxX, y: rect.midY), CGPoint(x: rect.midX, y: rect.minY), CGPoint(x: rect.midX, y: rect.maxY)]
         for (index, handle) in handles.enumerated() {
-            handle.isHidden = !completed || immediate || (index >= 5 && !freeResizeAllowed)
+            handle.isHidden = !completed || immediate || !showsResizeHandles || (index >= 5 && !freeResizeAllowed)
+            handle.isUserInteractionEnabled = !handle.isHidden
             handle.frame = CGRect(x: centers[index].x - 22, y: centers[index].y - 22, width: 44, height: 44)
         }
     }
@@ -118,7 +176,7 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
         else { clearSelection() }
     }
     @objc private func transformDragged(_ gesture: UIPanGestureRecognizer) {
-        guard completed, let handle = gesture.view else { return }
+        guard completed, showsResizeHandles, let handle = gesture.view, !handle.isHidden else { return }
         let point = gesture.location(in: self)
         if gesture.state == .began {
             transformOrigin = UIBezierPath(cgPath: path.cgPath); transformStart = point
@@ -157,7 +215,9 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
         outline.path = path.cgPath; updateHandles()
         transformChanged?(pendingScale, pendingScaleY, pendingRotation, anchor)
         if gesture.state == .ended {
+            Diagnostics.shared.record("lasso.transform", ["scale": String(format: "%.2f", pendingScale), "scaleY": String(format: "%.2f", pendingScaleY), "rotation": String(format: "%.2f", pendingRotation)])
             transformCommitted?(transformOrigin, pendingScale, pendingScaleY, pendingRotation, anchor)
+            resumeManipulation = true   // stay in manipulation mode while the user keeps adjusting
             clearSelection()
         } else if gesture.state == .cancelled || gesture.state == .failed {
             moveCancelled?()
@@ -185,7 +245,7 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
             path = UIBezierPath(cgPath: originalPath.cgPath); path.apply(CGAffineTransform(translationX: delta.x, y: delta.y))
             outline.path = path.cgPath
             updateHandles()
-            if state == .ended { moved?(originalPath, delta); moving = false; clearSelection() }
+            if state == .ended { Diagnostics.shared.record("lasso.move", ["dx": String(Int(delta.x)), "dy": String(Int(delta.y))]); moved?(originalPath, delta); moving = false; clearSelection() }
             else if state == .cancelled || state == .failed { moveCancelled?(); path = originalPath; outline.path = path.cgPath; moving = false }
             return
         }
@@ -197,7 +257,8 @@ final class PageSelectionView: UIView, UIEditMenuInteractionDelegate {
             let rect = path.bounds.intersection(bounds)
             completed = !rect.isNull && rect.width >= 8 && rect.height >= 8
             outline.path = completed ? path.cgPath : nil
-            freeResizeAllowed = completed && allowsFreeResize?(path) == true
+            freeResizeStale = completed
+            Diagnostics.shared.record("lasso.drawn", ["completed": String(completed), "w": String(Int(path.bounds.width)), "h": String(Int(path.bounds.height))])
             updateHandles()
             if completed && immediate { perform(.preview) }
             else if completed { presentMenu() }
@@ -215,44 +276,83 @@ final class SelectionDragPreview: UIView {
     private let guides = CAShapeLayer()
     private var guidePosition: CGPoint?
     private let offset: CGPoint
+    private var stickyResize: StickyResizePreview?
 
+    // `asynchronous`: rasterise off the main thread. The outline follows the finger immediately and the content
+    // snaps into the preview as soon as the bitmaps are ready (they are only needed for visual feedback).
     init(frame: CGRect, page: NotePage, artwork: PageArtwork?, drawing: InkDrawing,
-         snapshot: SelectionMoveSnapshot, zoom: CGFloat, offset: CGPoint) {
+         snapshot: SelectionMoveSnapshot, zoom: CGFloat, offset: CGPoint, asynchronous: Bool = false) {
         self.snapshot = snapshot; self.zoom = zoom; self.offset = offset
         super.init(frame: frame)
         isUserInteractionEnabled = false; clipsToBounds = true
         background.frame = bounds; addSubview(background); addSubview(foreground)
         guides.strokeColor = UIColor.systemBlue.cgColor; guides.lineWidth = 1; guides.lineDashPattern = [4, 4]; guides.fillColor = nil; layer.addSublayer(guides)
-        let visible = CGRect(x: offset.x / zoom, y: offset.y / zoom, width: bounds.width / zoom, height: bounds.height / zoom)
+        guard !snapshot.isEmpty else { return }
+        let size = bounds.size, displayScale = traitCollection.displayScale
+        let render = { Self.render(page: page, artwork: artwork, drawing: drawing, snapshot: snapshot, zoom: zoom, offset: offset, size: size, displayScale: displayScale) }
+        if asynchronous {
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let result = render()
+                await MainActor.run { self?.install(result) }
+            }
+        } else { install(render()) }
+    }
+    private typealias Rendered = (background: UIImage?, foreground: UIImage?, foregroundFrame: CGRect)
+    private func install(_ rendered: Rendered?) {
+        guard let rendered else { return }
+        background.image = rendered.background
+        foreground.image = rendered.foreground
+        // Not `frame`: the view may already carry a drag transform by the time the bitmap arrives.
+        let frame = rendered.foregroundFrame
+        foreground.bounds = CGRect(origin: .zero, size: frame.size); foreground.center = CGPoint(x: frame.midX, y: frame.midY)
+    }
+    private static func render(page: NotePage, artwork: PageArtwork?, drawing: InkDrawing, snapshot: SelectionMoveSnapshot,
+                               zoom: CGFloat, offset: CGPoint, size: CGSize, displayScale: CGFloat) -> Rendered? {
+        let visible = CGRect(x: offset.x / zoom, y: offset.y / zoom, width: size.width / zoom, height: size.height / zoom)
             .intersection(CGRect(origin: .zero, size: snapshot.pageSize))
-        guard !visible.isNull, !snapshot.isEmpty else { return }
+        guard !visible.isNull else { return nil }
         var base = page; base.elements?.removeAll { snapshot.elementIDs.contains($0.id) }
-        let remaining = InkDrawing(strokes: drawing.strokes.enumerated().filter { !snapshot.strokeIndices.contains($0.offset) }.map(\.element))
-        let format = UIGraphicsImageRendererFormat(); format.scale = min(2, traitCollection.displayScale)
-        background.image = UIGraphicsImageRenderer(size: bounds.size, format: format).image { output in
+        let remaining = InkDrawing(strokes: drawing.strokes.enumerated().filter { !snapshot.strokeIndices.contains($0.offset) }.map(\.element)).visible(on: base)
+        let format = UIGraphicsImageRendererFormat(); format.scale = min(2, displayScale)
+        let backgroundImage = UIGraphicsImageRenderer(size: size, format: format).image { output in
             let context = output.cgContext
             context.translateBy(x: -offset.x, y: -offset.y); context.scaleBy(x: zoom, y: zoom)
             context.clip(to: visible)
             // Match the on-screen stack: paper/elements, then native translucent ink.
             PageRenderer.background(base, data: artwork?.data, resources: artwork?.resources ?? [:],
                                     context: context, pdfPage: artwork?.pdfPage, images: artwork?.images ?? [:])
-            remaining.paperImage(from: visible, scale: zoom * format.scale).draw(in: visible)
+            if !remaining.strokes.isEmpty { remaining.paperImage(from: visible, scale: zoom * format.scale).draw(in: visible) }
         }
-        let crop = snapshot.bounds.insetBy(dx: -2, dy: -2)
+        let padding: CGFloat = snapshot.elements.contains { $0.kind == .stickyNote && $0.stickyShadowOpacity > 0 } ? 8 : 2
+        let crop = snapshot.bounds.insetBy(dx: -padding, dy: -padding)
         let scale = min(zoom * format.scale, 4096 / max(crop.width, crop.height))
-        let ink = snapshot.ink.paperImage(from: crop, scale: scale)
         var selectedPage = page; selectedPage.elements = snapshot.elements; selectedPage.text = nil
+        let ink = snapshot.ink.visible(on: selectedPage)
         let foregroundFormat = UIGraphicsImageRendererFormat(); foregroundFormat.scale = scale; foregroundFormat.opaque = false
-        foreground.image = UIGraphicsImageRenderer(size: crop.size, format: foregroundFormat).image { output in
+        let foregroundImage = UIGraphicsImageRenderer(size: crop.size, format: foregroundFormat).image { output in
             output.cgContext.translateBy(x: -crop.minX, y: -crop.minY)
             PageRenderer.elements(selectedPage, resources: artwork?.resources ?? [:], context: output.cgContext,
                                   images: artwork?.images ?? [:], drewPDF: false)
-            ink.draw(in: crop)
+            if !ink.strokes.isEmpty { ink.paperImage(from: crop, scale: scale).draw(in: crop) }
         }
-        foreground.frame = CGRect(x: crop.minX * zoom - offset.x, y: crop.minY * zoom - offset.y,
-                                  width: crop.width * zoom, height: crop.height * zoom)
+        return (backgroundImage, foregroundImage, CGRect(x: crop.minX * zoom - offset.x, y: crop.minY * zoom - offset.y,
+                                                         width: crop.width * zoom, height: crop.height * zoom))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func beginStickyResize(note: PageElement, page: NotePage, artwork: PageArtwork?) {
+        foreground.isHidden = true
+        let preview = StickyResizePreview(frame: bounds, note: note, page: page, artwork: artwork,
+                                          ink: snapshot.ink, zoom: zoom, offset: offset)
+        stickyResize = preview; addSubview(preview)
+    }
+
+    func resizeSticky(to size: CGSize) { stickyResize?.resize(to: size) }
+    func positionSticky(at origin: CGPoint) { stickyResize?.position(at: origin) }
+
+    func moveFreely(by screenDelta: CGPoint) {
+        foreground.transform = CGAffineTransform(translationX: screenDelta.x, y: screenDelta.y)
+    }
 
     @discardableResult
     func move(by screenDelta: CGPoint) -> CGPoint {
@@ -276,5 +376,50 @@ final class SelectionDragPreview: UIView {
         let screen = CGPoint(x: delta.x * zoom, y: delta.y * zoom)
         foreground.transform = CGAffineTransform(translationX: screen.x, y: screen.y)
         return screen
+    }
+}
+
+private final class StickyResizePreview: UIView {
+    private let original: PageElement
+    private var note: PageElement
+    private var page: NotePage
+    private let artwork: PageArtwork?
+    private let inkBounds: CGRect
+    private let inkImage: UIImage?
+    private let zoom: CGFloat
+    private let offset: CGPoint
+
+    init(frame: CGRect, note: PageElement, page: NotePage, artwork: PageArtwork?, ink: InkDrawing, zoom: CGFloat, offset: CGPoint) {
+        self.original = note; self.note = note; self.page = page; self.artwork = artwork
+        self.zoom = zoom; self.offset = offset
+        inkBounds = ink.bounds
+        if ink.strokes.isEmpty || inkBounds.isEmpty || inkBounds.isNull { inkImage = nil }
+        else { inkImage = ink.paperImage(from: inkBounds, scale: min(zoom * 2, 4096 / max(inkBounds.width, inkBounds.height))) }
+        super.init(frame: frame)
+        isOpaque = false; isUserInteractionEnabled = false; contentMode = .redraw
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func resize(to size: CGSize) { note.width = size.width; note.height = size.height; setNeedsDisplay() }
+    func position(at origin: CGPoint) { note.x = origin.x; note.y = origin.y; setNeedsDisplay() }
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        page.elements = page.elements?.map { $0.id == note.id ? note : $0 }
+        context.translateBy(x: -offset.x, y: -offset.y); context.scaleBy(x: zoom, y: zoom)
+        PageRenderer.elements(page, resources: artwork?.resources ?? [:], context: context, images: artwork?.images ?? [:], drewPDF: false)
+        guard let inkImage else { return }
+        context.saveGState()
+        context.addPath(note.visiblePath); context.clip()
+        func rotation(_ item: PageElement) -> CGAffineTransform {
+            let center = CGPoint(x: item.x + item.width / 2, y: item.y + item.height / 2)
+            return CGAffineTransform(translationX: center.x, y: center.y)
+                .rotated(by: item.rotation ?? 0).translatedBy(x: -center.x, y: -center.y)
+        }
+        let transform = rotation(original).inverted()
+            .concatenating(CGAffineTransform(translationX: -original.x, y: -original.y))
+            .concatenating(CGAffineTransform(translationX: note.x, y: note.y))
+            .concatenating(rotation(note))
+        context.concatenate(transform)
+        inkImage.draw(in: inkBounds)
+        context.restoreGState()
     }
 }

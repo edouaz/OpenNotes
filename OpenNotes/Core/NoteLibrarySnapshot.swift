@@ -51,7 +51,7 @@ extension NoteLibrarySnapshot {
     var rootFolders: [NotebookFolder] {
         let childIDs = Set(folders.flatMap(\.childFolderIDs))
         return folders
-            .filter { !childIDs.contains($0.id) }
+            .filter { !childIDs.contains($0.id) && $0.deletedAt == nil }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -94,7 +94,7 @@ extension NoteLibrarySnapshot {
 
         let childIDs = Set(folder.childFolderIDs)
         return folders
-            .filter { childIDs.contains($0.id) }
+            .filter { childIDs.contains($0.id) && $0.deletedAt == nil }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 

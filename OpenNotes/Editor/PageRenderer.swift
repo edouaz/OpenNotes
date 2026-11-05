@@ -31,10 +31,17 @@ enum PageRenderer {
     }
     static func elements(_ page: NotePage, resources: [String: Data], context: CGContext, images: [String: UIImage], drewPDF: Bool) {
         let bounds = CGRect(origin: .zero, size: size(page))
+        let hiddenParents = page.collapsedContentParents
+        let elementsByID = (page.elements ?? []).reduce(into: [UUID: PageElement]()) { $0[$1.id] = $1 }
         for item in (page.elements ?? []).enumerated().sorted(by: { ($0.element.zIndex ?? Double($0.offset)) < ($1.element.zIndex ?? Double($1.offset)) }).map(\.element) {
-            if let parent = item.parentID, page.elements?.contains(where: { $0.id == parent && $0.collapsed == true }) == true { continue }
+            if let parent = item.parentID, hiddenParents.contains(parent) { continue }
             context.saveGState()
             defer { context.restoreGState() }
+            var parent = item.parentID, visited: Set<UUID> = [item.id]
+            while let id = parent, visited.insert(id).inserted, let ancestor = elementsByID[id] {
+                if ancestor.kind == .stickyNote { context.addPath(ancestor.visiblePath); context.clip() }
+                parent = ancestor.parentID
+            }
             let rect = CGRect(x: item.x, y: item.y, width: item.width, height: item.height)
             if let angle = item.rotation, angle != 0 {
                 let center = item.collapsed == true ? CGPoint(x: item.x + 22, y: item.y + 22) : CGPoint(x: rect.midX, y: rect.midY)
@@ -48,11 +55,31 @@ enum PageRenderer {
                 if !drewPDF { UIColor.systemYellow.withAlphaComponent(0.3).setFill(); context.fill(rect) }
             case .stickyNote:
                 let noteRect = item.collapsed == true ? CGRect(x: item.x, y: item.y, width: 44, height: 44) : rect
-                (item.fillColorHex.flatMap(UIColor.init(presetHex:)) ?? UIColor(red: 1, green: 0.92, blue: 0.5, alpha: 1)).setFill(); context.fill(noteRect)
+                let path = item.stickyPath
+                context.saveGState()
+                if item.stickyShadowOpacity > 0 {
+                    context.setShadow(offset: CGSize(width: 0, height: 2), blur: 5, color: UIColor.black.withAlphaComponent(item.stickyShadowOpacity).cgColor)
+                }
+                (item.fillColorHex.flatMap(UIColor.init(presetHex:)) ?? UIColor(red: 1, green: 0.92, blue: 0.5, alpha: 1)).withAlphaComponent(item.stickyBackgroundOpacity).setFill()
+                context.addPath(path); context.fillPath(); context.restoreGState()
+                context.addPath(path); context.clip()
+                if item.stickyBorderWidth > 0 {
+                    (item.strokeColorHex.flatMap(UIColor.init(presetHex:)) ?? .black).setStroke()
+                    context.setLineWidth(item.stickyBorderWidth * 2)
+                    context.addPath(path); context.strokePath()
+                }
                 if item.collapsed == true {
-                    UIImage(systemName: "arrow.up.left.and.arrow.down.right")?.withTintColor(.darkGray, renderingMode: .alwaysOriginal).draw(in: noteRect.insetBy(dx: 12, dy: 12))
+                    UIColor.darkGray.setStroke(); context.setLineWidth(1.5)
+                    let icon = noteRect.insetBy(dx: 12, dy: 11)
+                    context.move(to: CGPoint(x: icon.minX, y: icon.minY))
+                    context.addLine(to: CGPoint(x: icon.maxX - 6, y: icon.minY))
+                    context.addLine(to: CGPoint(x: icon.maxX, y: icon.minY + 6))
+                    context.addLine(to: CGPoint(x: icon.maxX, y: icon.maxY))
+                    context.addLine(to: CGPoint(x: icon.minX, y: icon.maxY)); context.closePath(); context.strokePath()
+                    context.move(to: CGPoint(x: icon.maxX - 6, y: icon.minY))
+                    context.addLine(to: CGPoint(x: icon.maxX - 6, y: icon.minY + 6))
+                    context.addLine(to: CGPoint(x: icon.maxX, y: icon.minY + 6)); context.strokePath()
                 } else {
-                    context.clip(to: noteRect)
                     RichTextDocument.attributed(item).draw(with: noteRect.insetBy(dx: 8, dy: 8), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
                 }
             case .text:
@@ -93,11 +120,11 @@ enum PageRenderer {
         let inkBounds = inkRect ?? CGRect(origin: .zero, size: size(page))
         foreground?.paperImage(from: inkBounds, scale: inkScale).draw(in: inkBounds)
     }
-    static func image(_ page: NotePage, data: Data?, drawing: InkDrawing? = nil, resources: [String: Data] = [:], scale: CGFloat = 1) -> UIImage {
+    static func image(_ page: NotePage, data: Data?, drawing: InkDrawing? = nil, resources: [String: Data] = [:], pdfPage: CGPDFPage? = nil, images: [String: UIImage] = [:], scale: CGFloat = 1) -> UIImage {
         let format = UIGraphicsImageRendererFormat(); format.scale = scale; format.opaque = true
         let bounds = CGRect(origin: .zero, size: size(page))
         return UIGraphicsImageRenderer(size: bounds.size, format: format).image { renderer in
-            composite(page, data: data, drawing: drawing, resources: resources, context: renderer.cgContext, inkScale: scale)
+            composite(page, data: data, drawing: drawing, resources: resources, context: renderer.cgContext, pdfPage: pdfPage, images: images, inkScale: scale)
         }
     }
     static func capture(_ page: NotePage, data: Data?, drawing: InkDrawing, resources: [String: Data], rect: CGRect, path: UIBezierPath? = nil) throws -> UIImage {
@@ -120,13 +147,20 @@ enum PageRenderer {
             return try InkDrawing(data: bytes)
         }
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 794, height: 1123))
+        // Parse each embedded PDF once, not once per exported page.
+        var sources: [String: CGPDFDocument] = [:]
         try renderer.writePDF(to: output) { renderer in
             for index in indices {
                 let page = archive.pages[index]
                 let bounds = CGRect(origin: .zero, size: size(page))
                 renderer.beginPage(withBounds: bounds, pageInfo: [:])
                 let drawing = drawings[index]
-                composite(page, data: page.backgroundID.flatMap { archive.resources[$0] }, drawing: drawing, resources: archive.resources, context: renderer.cgContext)
+                var pdfPage: CGPDFPage?
+                if let id = page.backgroundID, let index = page.pdfIndex, let bytes = archive.resources[id] {
+                    if sources[id] == nil, let provider = CGDataProvider(data: bytes as CFData) { sources[id] = CGPDFDocument(provider) }
+                    pdfPage = sources[id]?.page(at: index + 1)
+                }
+                composite(page, data: page.backgroundID.flatMap { archive.resources[$0] }, drawing: drawing, resources: archive.resources, context: renderer.cgContext, pdfPage: pdfPage)
             }
         }
     }

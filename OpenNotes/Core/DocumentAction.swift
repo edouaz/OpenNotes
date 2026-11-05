@@ -66,6 +66,9 @@ struct DocumentAction: Codable, Sendable {
         element.x >= 0 && element.y >= 0 && element.width > 0 && element.height > 0 &&
         element.x + element.width <= (page.width ?? 794) + 0.01 &&
         element.y + element.height <= (page.height ?? 1123) + 0.01 &&
+        (element.stickyCornerRadius.map { $0.isFinite && (0...24).contains($0) } ?? true) &&
+        (element.stickyOpacity.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
+        (element.stickyShadow.map { $0.isFinite && (0...0.3).contains($0) } ?? true) &&
         (element.strokeWidth.map { $0.isFinite && (0.5...32).contains($0) } ?? true) &&
         [element.strokeColorHex, element.fillColorHex].compactMap { $0 }.allSatisfy { color in
             color.count == 7 && color.first == "#" && color.dropFirst().allSatisfy(\.isHexDigit)

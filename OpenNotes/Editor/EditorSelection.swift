@@ -18,9 +18,10 @@ extension EditorSession {
     }
 
     @discardableResult
-    func moveSelection(inside path: UIBezierPath, by requested: CGPoint) async -> Bool {
+    func moveSelection(inside path: UIBezierPath, by requested: CGPoint, durable: Bool = true) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard !isReadOnly, requested.x.isFinite, requested.y.isFinite, let pageID = page?.id,
-              await flush(), let original = page, original.id == pageID else { return false }
+              await prepareEdit(durable: durable), let original = page, original.id == pageID else { return false }
         let snapshot = SelectionMoveSnapshot(page: original, drawing: canvas.drawing, path: path, settings: toolSettings)
         guard !snapshot.isEmpty, !snapshot.containsLockedObjects else { return false }
         let delta = snapshot.clamped(requested)
@@ -35,11 +36,12 @@ extension EditorSession {
             return InkDrawing(strokes: [stroke]).transformed(using: CGAffineTransform(translationX: delta.x, y: delta.y)).strokes[0]
         }
         replaceContent(InkDrawing(strokes: strokes), elements: moved, actionName: "Move selection", attachObjects: true)
-        return await flush()
+        return durable ? await flush() : true
     }
 
     @discardableResult
     func transformSelection(inside path: UIBezierPath, scale: CGFloat, deleting: Bool = false) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard !isReadOnly, scale.isFinite, (0.1...10).contains(scale), await flush(), let original = page else { return false }
         let drawing = canvas.drawing
         let snapshot = SelectionMoveSnapshot(page: original, drawing: drawing, path: path, settings: toolSettings)
@@ -98,8 +100,14 @@ struct SelectionMoveSnapshot {
             for item in page.elements ?? [] where item.parentID.map({ selectedIDs.contains($0) }) == true { selectedIDs.insert(item.id) }
             changed = old != selectedIDs.count
         }
-        let indices = Set(drawing.strokes.indices.filter {
-            (settings.includeHandwriting && DocumentClipboard.contains(drawing.strokes[$0], inside: path)) || drawing.strokes[$0].parentID.map({ selectedIDs.contains($0) }) == true
+        let occlusion = StickyInkOcclusion(page.elements ?? [])
+        let pathBounds = path.bounds
+        let indices = Set(drawing.strokes.indices.filter { index in
+            let stroke = drawing.strokes[index]
+            if stroke.parentID.map({ selectedIDs.contains($0) }) == true { return true }
+            // Strokes far from the lasso skip the sticky-occlusion path booleans entirely.
+            guard settings.includeHandwriting, stroke.renderBounds.intersects(pathBounds) else { return false }
+            return occlusion.visible(stroke).map { DocumentClipboard.contains($0, inside: path) } == true
         })
         let lockedParents = Set((page.elements ?? []).filter { $0.isLocked == true }.map(\.id))
         containsLockedObjects = !lockedParents.isDisjoint(with: selectedIDs) || indices.contains { index in

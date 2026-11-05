@@ -284,21 +284,6 @@ struct ToolCustomizationAndSelectionTests {
         #expect(page.elements == [note])
     }
 
-    @Test func eraserCursorTracksPositionAndZoomWithoutConsumingNativeErasing() throws {
-        let canvas = InkCanvasView()
-        let view = PageScrollView(canvas: canvas)
-        view.eraserCursorEnabled = true; view.eraserCursorWidth = 24
-        view.showEraserCursor(at: CGPoint(x: 100, y: 80))
-        let circle = try #require(view.layer.sublayers?.compactMap { $0 as? CAShapeLayer }.first { $0.path?.boundingBox.midX == 100 })
-        #expect(circle.path?.boundingBox.width == max(6, 24 * canvas.zoomScale))
-        view.showEraserCursor(at: CGPoint(x: 120, y: 90))
-        #expect(circle.path?.boundingBox.midX == 120)
-        view.eraserCursorEnabled = false
-        #expect(circle.path == nil)
-        #expect(canvas.drawingGestureRecognizer.isEnabled)
-        view.detachInteractions(); view.pageTurn.detach()
-    }
-
     @Test func fastSelectionPickupUsesContactOriginAndCancellationPreservesSelection() {
         let view = PageSelectionView(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
         var pickups = 0

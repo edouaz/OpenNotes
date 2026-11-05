@@ -44,7 +44,12 @@ struct DiagnosticsScreen: View {
                         "bundle": Bundle.main.bundleIdentifier ?? "?", "os": UIDevice.current.systemVersion,
                         "machine": machine, "toolbar": "OpenNotes",
                         "fingerDrawing": String(defaults.bool(forKey: "fingerDrawing")), "verticalPaging": String(defaults.bool(forKey: "verticalPaging")),
-                        "lowPowerMode": String(ProcessInfo.processInfo.isLowPowerModeEnabled)]
+                        "lowPowerMode": String(ProcessInfo.processInfo.isLowPowerModeEnabled),
+                        "idiom": UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone",
+                        "screen": "\(Int(UIScreen.main.bounds.width))x\(Int(UIScreen.main.bounds.height))@\(Int(UIScreen.main.scale))x",
+                        "reduceMotion": String(UIAccessibility.isReduceMotionEnabled),
+                        "textSize": UIApplication.shared.preferredContentSizeCategory.rawValue,
+                        "locale": Locale.current.identifier, "debugLogging": String(Diagnostics.shared.enabled)]
         Diagnostics.shared.record("diagnostics.export")
         do { share = ShareFile(url: try await Diagnostics.shared.export(metadata: metadata)) }
         catch { self.error = error.localizedDescription }

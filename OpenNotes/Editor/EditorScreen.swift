@@ -10,9 +10,6 @@ struct EditorScreen: View {
     @AppStorage("fingerDrawing") private var finger = false
     @AppStorage("verticalPaging") private var verticalPaging = false
     @State private var annotationsShown = false
-    @State private var insertionShown = false
-    @AppStorage("toolPaletteDock") private var paletteDock = "top"
-    @AppStorage("toolPaletteVisible") private var paletteVisible = true
     @State private var searchShown = false
     @State private var stickyNote: PageElement?
     @State private var textElement: PageElement?
@@ -21,17 +18,22 @@ struct EditorScreen: View {
     @State private var selecting = false
     @State private var capture: UIImage?
     @State private var captureShown = false
+    @State private var copyConfirmation = false
     @State private var previousPreview: UIImage?
     @State private var nextPreview: UIImage?
     @State private var pageDirection = 1
     @State private var exporting = false
     @State private var editingImages = false
+    @State private var imageToSelect: UUID?
     @State private var pagesShown = false
     @State private var pagePanelEditing = false
     @State private var exportShown = false
     @State private var paperShown = false
     @State private var elementsShown = false
     @State private var share: ShareFile?
+    @State private var diagnosticsShown = false
+    @State private var pendingShare: ShareFile?
+    @State private var sharingError: String?
     @State private var deleteShown = false
     @State private var deletePageID: UUID?
     @State private var first = 1
@@ -47,6 +49,9 @@ struct EditorScreen: View {
         _session = StateObject(wrappedValue: session ?? EditorSession(store: store, noteID: noteID))
     }
     var pages: [NotePage] { store.library.pages(in: noteID) }
+    private var documentEditorPresented: Bool {
+        stickyNote != nil || textElement != nil || shapeElement != nil || paperShown || elementsShown || annotationsShown || renameShown
+    }
     private var neighboringPages: [NotePage] {
         [currentIndex - 1, currentIndex + 1].compactMap { pages.indices.contains($0) ? pages[$0] : nil }
     }
@@ -55,7 +60,7 @@ struct EditorScreen: View {
             VStack(spacing: 0) {
                 quickActions
                 if !session.isReadOnly {
-                    WritingInstrumentBar(session: session, insert: { insertionShown = true }, sticky: insertSticky)
+                    WritingInstrumentBar(session: session, sticky: insertSticky)
                 }
                 if selecting || editingImages { modeBanner }
                 if session.stickyInsertionColor != nil {
@@ -71,16 +76,29 @@ struct EditorScreen: View {
                             .frame(width: min(280, geometry.size.width * 0.3))
                         Divider()
                     }
-                    dockedCanvas
+                    canvasWorkspace.background(OpenNotesStyle.canvas)
                 }
             }
             .sheet(isPresented: Binding(get: { pagesShown && geometry.size.width < 700 }, set: { pagesShown = $0 })) { pageList }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: pagesShown)
         }
         .overlay(alignment: .topTrailing) { if session.busy { ProgressView().padding(12).allowsHitTesting(false) } }
+        .overlay(alignment: .bottom) {
+            if copyConfirmation {
+                Label("Screenshot copied", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline).padding(12).background(.regularMaterial, in: Capsule())
+                    .padding().allowsHitTesting(false)
+            }
+        }
         .clipped()
         .background(Color(uiColor: .systemBackground))
+        .disabled(session.cloudInstalling)
         .navigationBarBackButtonHidden().toolbar(.hidden, for: .navigationBar)
+        .task(id: copyConfirmation) {
+            guard copyConfirmation else { return }
+            do { try await Task.sleep(nanoseconds: 4_000_000_000); copyConfirmation = false }
+            catch { }
+        }
         .task {
             let id = UserDefaults.standard.string(forKey: "lastPage-\(noteID)").flatMap(UUID.init(uuidString:))
             await session.open(id)
@@ -91,7 +109,9 @@ struct EditorScreen: View {
                 Task { await session.flush(); UIApplication.shared.endBackgroundTask(taskID) }
             }
         }
-        .onDisappear { session.stickyInsertionColor = nil; finishMode(); session.cancelPreparation(); session.cancelOCR(); Task { await session.flush() } }
+        .onAppear { session.cloudDocumentEditorPresented = documentEditorPresented }
+        .onChange(of: documentEditorPresented) { session.cloudDocumentEditorPresented = $0 }
+        .onDisappear { session.cloudDocumentEditorPresented = false; session.stickyInsertionColor = nil; finishMode(); session.cancelPreparation(); session.cancelOCR(); Task { await session.flush() } }
         .onChange(of: session.page?.id) { _ in session.stickyInsertionColor = nil; finishMode() }
         .task(id: neighboringPages) {
             previousPreview = nil; nextPreview = nil
@@ -110,14 +130,6 @@ struct EditorScreen: View {
             }
             Button("Cancel", role: .cancel) { }
         }
-        .confirmationDialog("Insert", isPresented: $insertionShown, titleVisibility: .visible) {
-            Button("Image") { elementsShown = true }
-            Button("Text box") { textElement = PageElement(kind: .text, text: "") }
-            Button("Shape") { shapeElement = PageElement(kind: .rectangle) }
-            Button("Sticky note", action: insertSticky)
-            Button("Capture an area") { finishMode(); selecting = true }
-            Button("Capture entire page") { capturePage() }
-        }
         .sheet(isPresented: $annotationsShown) { AnnotationsSheet(session: session) { item in
             Task { try? await Task.sleep(nanoseconds: 300_000_000); stickyNote = item }
         } }
@@ -129,64 +141,57 @@ struct EditorScreen: View {
         .sheet(item: $shapeElement, onDismiss: { session.selectedTool = .lasso }) { item in
             if let page = session.page { ShapeElementSheet(session: session, pageID: page.id, element: item) }
         }
-        .sheet(isPresented: $captureShown) { [capture] in if let capture { CaptureSheet(image: capture) { Task { await session.insertImage(capture); beginImagePlacement() } } } }
+        .sheet(isPresented: $captureShown) { [capture] in if let capture { CaptureSheet(image: capture) { beginImagePlacement(); Task { await session.insertImage(capture) } } } }
         .sheet(isPresented: $paperShown) { PaperSheet(session: session) }
         .sheet(isPresented: $elementsShown, onDismiss: { finishMode(); session.selectedTool = .lasso; editingImages = session.page?.elements?.contains(where: { $0.kind == .image }) == true }) { ElementSheet(session: session) }
-        .sheet(isPresented: $exportShown) { exportForm }
-        .sheet(item: $share) { ActivitySheet(url: $0.url) }
+        .sheet(isPresented: $exportShown, onDismiss: {
+            if let pendingShare { share = pendingShare; self.pendingShare = nil }
+        }) { exportForm }
+        .sheet(item: $share, onDismiss: {
+            if let sharingError { session.error = sharingError; self.sharingError = nil }
+        }) { file in
+            ActivitySheet(url: file.url) { error in
+                sharingError = "Sharing failed: \(error.localizedDescription)"
+                share = nil
+            }
+        }
         .alert("OpenNotes", isPresented: Binding(get: { session.error != nil || store.error != nil }, set: { if !$0 { session.error = nil; store.error = nil } })) {
             Button("Retry saving") { store.persist(); Task { await session.flush() } }
             Button("Close", role: .cancel) { session.error = nil; store.error = nil }
         } message: { Text(session.error ?? store.error ?? "") }
     }
-    private var dockedCanvas: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 8) {
-                if paletteVisible && !session.isReadOnly && paletteDock == "top" { palette(horizontal: true, size: geometry.size) }
-                HStack(spacing: 8) {
-                    if paletteVisible && !session.isReadOnly && paletteDock == "left" { palette(horizontal: false, size: geometry.size) }
-                    canvasWorkspace
-                    if paletteVisible && !session.isReadOnly && paletteDock == "right" { palette(horizontal: false, size: geometry.size) }
-                }
-                if paletteVisible && !session.isReadOnly && paletteDock == "bottom" { palette(horizontal: true, size: geometry.size) }
-            }.padding(paletteVisible && !session.isReadOnly ? 10 : 0).background(OpenNotesStyle.canvas)
-        }
-    }
-    private func palette(horizontal: Bool, size: CGSize) -> some View {
-        ScrollView(horizontal ? .horizontal : .vertical, showsIndicators: false) {
-            ActiveWritingPalette(session: session)
-                .simultaneousGesture(DragGesture(minimumDistance: 35).onEnded { gesture in
-                    let delta = gesture.translation
-                    if abs(delta.width) > abs(delta.height) { paletteDock = delta.width < 0 ? "left" : "right" }
-                    else { paletteDock = delta.height < 0 ? "top" : "bottom" }
-                })
-        }.frame(maxWidth: horizontal ? size.width : 108, maxHeight: horizontal ? 58 : size.height)
-    }
     private func insertSticky() {
         guard !session.isReadOnly else { return }
-        finishMode(); session.stickyInsertionColor = "#FFE66D"; paletteVisible = true
+        finishMode(); session.stickyInsertionColor = session.toolSettings.stickyColorHex ?? "#FFE66D"
     }
-    private func capturePage() {
-        guard let page = session.page else { return }
+    private func capturePage(copy: Bool = false) {
+        guard let page = session.pageIncludingDrafts else { return }
         let data = session.backgroundData, drawing = session.drawing, resources = session.resources
         Task {
             do {
                 let image = try await Task.detached(priority: .userInitiated) {
                     try PageRenderer.capture(page, data: data, drawing: drawing, resources: resources, rect: CGRect(origin: .zero, size: PageRenderer.size(page)), path: nil)
                 }.value
-                capture = image; captureShown = true
+                if copy { confirmImageCopy(image) }
+                else { capture = image; captureShown = true }
             } catch { session.error = error.localizedDescription }
         }
+    }
+    private func confirmImageCopy(_ image: UIImage) {
+        UIPasteboard.general.image = image
+        UIAccessibility.post(notification: .announcement, argument: "Screenshot copied")
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        copyConfirmation = true
     }
     private var canvasWorkspace: some View {
         Group {
             if session.page != nil {
-                WritingCanvas(session: session, finger: finger, reading: session.isReadOnly, verticalPaging: verticalPaging, editingImages: editingImages, pageDirection: pageDirection,
+                WritingCanvas(session: session, finger: finger, reading: session.isReadOnly, verticalPaging: verticalPaging, editingImages: editingImages, imageToSelect: imageToSelect, pageDirection: pageDirection,
                     previousPreview: previousPreview, nextPreview: nextPreview,
                     hasPrevious: currentIndex > 0, hasNext: currentIndex + 1 < pages.count,
                     selectionMode: selecting, immediateSelection: selectionKind != nil, selectedRect: selectRegion, pasted: { finishMode() }, editNote: { stickyNote = $0 },
-                    imageEditingEnded: { finishMode() }, selectionMoved: { path, delta in
-                        await session.moveSelection(inside: path, by: delta)
+                    editImage: { id in beginImagePlacement(); imageToSelect = id }, imageEditingEnded: { finishMode() }, selectionMoved: { path, delta in
+                        await session.moveSelection(inside: path, by: delta, durable: false)
                     }, prepare: { delta in
                         if delta == 0 { session.cancelPreparation(); return }
                         let index = currentIndex + delta
@@ -267,7 +272,7 @@ struct EditorScreen: View {
             .accessibilityIdentifier("editor.mode.done")
     }
     private func finishMode() {
-        selecting = false; selectionKind = nil; editingImages = false
+        selecting = false; selectionKind = nil; editingImages = false; imageToSelect = nil
     }
     private func beginImagePlacement() {
         finishMode()
@@ -281,14 +286,25 @@ struct EditorScreen: View {
                 renameShown = true
             }
             Button("Search notebook", systemImage: "magnifyingglass") { searchShown = true }
+            Button("Quick Screenshot & Copy", systemImage: "doc.on.clipboard") { capturePage(copy: true) }
+                .disabled(session.page == nil).accessibilityIdentifier("editor.quickScreenshotCopy")
             if !session.searchHighlights.isEmpty {
                 Button("Clear search results") { session.searchHighlights = [] }
             }
             Button("Change paper", systemImage: "doc") { paperShown = true }.disabled(session.isReadOnly)
+            Button("Image", systemImage: "photo") { elementsShown = true }.disabled(session.isReadOnly)
+            Button("Text box", systemImage: "textformat") { textElement = PageElement(kind: .text, text: "") }.disabled(session.isReadOnly)
+            Button("Shape", systemImage: "square.on.circle") { shapeElement = PageElement(kind: .rectangle) }.disabled(session.isReadOnly)
+            Button("Capture an area", systemImage: "viewfinder") { finishMode(); selecting = true }.disabled(session.isReadOnly)
+            Button("Capture entire page", systemImage: "camera") { capturePage() }
+            Button("Share current page", systemImage: "square.and.arrow.up") {
+                first = currentIndex + 1; last = first; exportShown = true
+            }.accessibilityIdentifier("editor.sharePage")
             Button("Export notebook", systemImage: "square.and.arrow.up") {
                 first = 1; last = pages.count; exportShown = true
             }.accessibilityIdentifier("editor.share")
             Divider()
+            Button("Diagnostics & logs", systemImage: "stethoscope") { diagnosticsShown = true }
             Toggle("Write with your finger", isOn: $finger)
             Toggle("Ruler", isOn: Binding(get: { session.toolSettings.rulerEnabled == true }, set: { session.toolSettings.rulerEnabled = $0 }))
             Toggle("Recognize shapes", isOn: $session.toolSettings.shapeRecognitionEnabled)
@@ -305,6 +321,7 @@ struct EditorScreen: View {
             }
         } label: { Label("Notebook actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
             .accessibilityIdentifier("editor.actions")
+            .sheet(isPresented: $diagnosticsShown) { DiagnosticsScreen() }
     }
     @discardableResult private func quickAddPage(before: Bool = false) async -> Bool {
         guard !session.isReadOnly, !session.busy, await session.flush(), let current = session.page,
@@ -318,7 +335,7 @@ struct EditorScreen: View {
         return session.page?.id == id
     }
     private func selectRegion(_ rect: CGRect, _ path: UIBezierPath, _ action: PageSelectionAction) {
-        guard !session.isReadOnly, let page = session.page else { return }
+        guard !session.isReadOnly, let page = session.pageIncludingDrafts else { return }
         if action == .enlarge || action == .shrink || action == .deleteContent {
             Task {
                 if await session.transformSelection(inside: path, scale: action == .enlarge ? 1.1 : 0.9, deleting: action == .deleteContent) { finishMode() }
@@ -342,7 +359,7 @@ struct EditorScreen: View {
                 do {
                     let image = try await Task.detached(priority: .userInitiated) { try PageRenderer.capture(page, data: data, drawing: drawing, resources: resources, rect: rect, path: nil) }.value
                     finishMode()
-                    if action == .copyPhoto { UIPasteboard.general.image = image }
+                    if action == .copyPhoto { confirmImageCopy(image) }
                     else { capture = image; captureShown = true }
                 } catch { session.error = error.localizedDescription }
             }
@@ -410,19 +427,23 @@ struct EditorScreen: View {
         NavigationStack {
             Form {
                 if exporting { ProgressView("Export in progress…") }
+                if let message = session.error ?? store.error {
+                    Text(message).foregroundStyle(.red).accessibilityIdentifier("editor.exportError")
+                }
                 Stepper("From page \(first)", value: $first, in: 1...max(1, pages.count))
                 Stepper("To page \(last)", value: $last, in: first...max(first, pages.count))
                 Button("Export annotated PDF") { Task { await export(native: false) } }.disabled(exporting)
                 Button("Back up native notebook (.catnote)") { Task { await export(native: true) } }.disabled(exporting)
                 Text("Sharing lets you save to Files and its configured providers.").font(.caption)
-            }.navigationTitle("Export").toolbar { Button("Cancel") { exportShown = false } }
+            }.navigationTitle("Export").toolbar { Button("Cancel") { exportShown = false }.disabled(exporting) }
         }
+        .interactiveDismissDisabled(exporting)
     }
     func export(native: Bool) async {
         Diagnostics.shared.record("document.export.begin", ["native": String(native)])
-        guard await session.flush() else { return }
         guard !exporting else { return }
         exporting = true; defer { exporting = false }
+        guard await session.flush() else { return }
         do {
             let selectedRange = (first - 1)...(max(first, last) - 1)
             let archive = try await store.archive(noteID, indices: native ? nil : selectedRange)
@@ -432,9 +453,8 @@ struct EditorScreen: View {
                 if native { try JSONEncoder().encode(archive).write(to: url, options: .atomic) }
                 else { try PageRenderer.export(archive, indices: range, output: url) }
             }.value
+            pendingShare = ShareFile(url: url)
             exportShown = false
-            try await Task.sleep(nanoseconds: 300_000_000)
-            share = ShareFile(url: url)
         } catch { session.error = error.localizedDescription }
     }
 
@@ -443,7 +463,12 @@ struct EditorScreen: View {
 struct ShareFile: Identifiable { let id = UUID(); let url: URL }
 struct ActivitySheet: UIViewControllerRepresentable {
     let url: URL
-    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: [url], applicationActivities: nil) }
+    var onError: ((Error) -> Void)?
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, error in if let error { onError?(error) } }
+        return controller
+    }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) { }
 }
 struct PageThumbnail: View {
