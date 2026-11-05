@@ -1,50 +1,45 @@
-# Supabase — configuration and validation
+# Supabase — account, sync and validation
 
-The cloud integration has not been tested against a live service. No development project, accounts or credentials were available for that validation. Local notebooks work without this configuration.
+OpenNotes uses Supabase Auth for its application accounts and the remote MCP service uses the same accounts. These are separate from Supabase dashboard or Vercel administrator credentials. No default application email or password is supplied.
 
-## Development setup
+## Application workflow
 
-1. Create a development Supabase project. Enable email/password authentication and configure email confirmation as appropriate.
-2. Apply `supabase/migrations/202610210001_notebooks.sql` using the SQL editor or Supabase CLI. The migration is not idempotent; do not apply it twice.
-3. Copy `Config/Supabase.example.plist` to `Config/Supabase.plist` (ignored by Git). Set the HTTPS project URL and **only a publishable key**, or a legacy JWT with the `anon` role. The configuration loader rejects secret keys and privileged-role JWTs.
-4. Run `python3 scripts/generate-project.py` to include the local configuration, then rebuild the app.
-5. In the account and cloud screen, create/confirm an account, sign in and explicitly link the library. A local library is linked to one account to avoid uploading one person's documents to another account after switching sessions.
+1. Open **Account and connections** using the person button in the library toolbar.
+2. Choose **Create account**, enter your email and password twice, and submit. If email confirmation is required, follow the email link, return to OpenNotes and choose **Sign in**. Account creation does not silently upload the library.
+3. Choose **Link and sync this library**. Wait for **Synced** before expecting the library to be available to another device or assistant.
+4. Sync runs automatically after local saves, on returning to the app, and after a network connection returns. The bottom-left library indicator opens account details and a retry action. **Pause sync** stops app synchronization; **Resume sync** restarts it. Signing out removes the session on this device and stops requests; signing back into the same linked account resumes automatic sync unless it was explicitly paused. Neither action deletes local notebooks, cloud revisions or existing chatbot authorizations.
 
-Session tokens are stored in the device-only Keychain and become accessible after the first device unlock. Passwords and tokens are not logged. Signing out clears the local session; it does not delete notebooks. The existing Keychain service identifier is retained across the OpenNotes rename so updates can access the previous session.
+A local library is linked to one account. Signing into a different account does not upload that library to the new account. Use the original account to resume it; account migration is not provided by this screen.
 
-## Data and recovery
+Tokens are stored in the device-only Keychain and become accessible after first unlock. Password inputs are cleared after authentication attempts. An invalid/expired session prompts another sign-in and stops automatic requests until sign-in succeeds. Temporary network failures preserve the session and allow subsequent retries. A restored session is not proof of a fresh successful connection.
 
-- The private `notebooks` bucket stores native documents, including drawings and source PDFs. The initial storage object limit is 150 MiB; local imports are limited to 150 MB.
-- Postgres stores notebook, revision and parent identifiers, SHA-256 values, object paths and timestamps. It does not store binary document data.
-- Revisions and their Storage objects are immutable. No UPDATE/DELETE policy is enabled. Only the owner can read or insert their data.
-- Saved local metadata provides the upload queue: the modified date and then checksum are compared with the locally retained sync state. The client checks every 30 seconds **while in the foreground**, and resumes on the next foreground transition or launch. Writing never waits for the network. Background transfer while iOS suspends the app is not guaranteed.
-- The object is uploaded before the revision row. An interruption between these operations can leave an orphaned object; server maintenance is needed before production use.
-- An unknown remote revision is imported with new local identifiers, without replacing a notebook. When versions diverge, both remain, and the remote copy is named accordingly. Merging and grouping a remote revision history into one notebook are still unfinished; this conservative protocol creates copies of updates from another device.
-- An imported notebook becomes visible only after all its resources have been written. A concurrent local mutation cancels publication and preserves local data. Orphaned resources can remain on disk without appearing in the library.
+## Assistant workflow
 
-**This is an experimental, non-overwriting cloud prototype, not validated production synchronization.** Interrupted transfers, retries, revision deduplication, session renewal, multiple-device conflicts and pagination still need automated tests against a real service. Tracking state uses UserDefaults and is not transactional with the library: a sudden stop may create an extra copy instead of replacing the original.
+The **Assistants** section copies `https://opennotes-mcp-edouazs-projects.vercel.app/mcp`. Add it to an OAuth-capable chatbot, sign into the same application account on the authorization page, and choose **Allow**. The app does not connect to arbitrary MCP servers and does not infer an active chatbot connection from a saved URL. Authorized assistants access the cloud while the iPad is closed; their changes appear on the next app sync.
 
-## Previously executed local SQL validation
+Web signup, password recovery, an authorized-client list and user-facing grant revocation are not implemented by this screen. App sign-out does not revoke an assistant's grant. See [MCP deployment and validation](MCP.md) for server configuration, tools and the distinction between verified public endpoints and the unverified signed-in production round trip.
 
-`python3 scripts/test-rls-local.py` previously passed on PostgreSQL 16.14 in a disposable cluster using a Unix socket, without a network listener; the cluster was removed afterward. The script applies the real migration and checks owner/A/B access in both directions: owner SELECT/INSERT, cross-account invisibility and insert rejection, immutable metadata and files, and rejection of anonymous access.
+## Configuration and data
 
-The `auth` and `storage` schemas/functions are minimal stubs. This does not test Supabase Auth, the Storage HTTP API, service limits or policies already present in a real project.
+The existing **Test** project (`evuqpcklfxxnjzjcrwos`) has been configured in the previous deployment work. `Config/Supabase.plist` is ignored by Git; it contains the HTTPS project URL and a publishable key. The configuration loader rejects secret keys and privileged-role JWTs. The project generator includes the plist when present. No privileged backend key belongs in the app.
 
-## Two-account isolation test against Supabase
+For a new environment, apply all migrations in order:
 
-Use a **disposable** project and create/confirm two different users. Set these environment variables:
+- `202610210001_notebooks.sql`
+- `20261030001002_notebook_heads_mcp.sql`
+- `20261031095542_notebook_foreign_key_indexes.sql`
+- `20261031152942_mcp_transfers.sql`
 
-```text
-SUPABASE_URL
-SUPABASE_PUBLISHABLE_KEY
-TEST_A_EMAIL
-TEST_A_PASSWORD
-TEST_B_EMAIL
-TEST_B_PASSWORD
-```
+Private Storage contains immutable notebook archives, including native ink and source PDFs. Postgres holds owner-scoped revision metadata, heads, folders and audit records. The client uploads an immutable object and publishes its revision through `commit_notebook_revision` with an expected head. Stale updates are rejected. Unchanged remote documents update existing local documents; concurrent changes preserve both versions for explicit resolution. Cloud state is stored atomically in the library's `cloud-state.json`.
 
-Run `python3 scripts/check-rls.py`. The script does not log secrets. It checks owner upload/read in both directions, invisibility of the other user's metadata, rejection of downloads of the other user's binary data, rejection of updates and owner impersonation. It deliberately leaves immutable fixtures in the disposable project. These HTTP assertions have not been run because test accounts were not available.
+Local saves debounce synchronization by one second. The app also checks for remote changes every 30 seconds while active. Local writing does not wait for the network. Busy editors and edits made during network requests remain pending; conflicts and save failures do not show a successful sync. The last complete successful synchronization is persisted in cloud state and shown separately in account details. It is a historical timestamp, not proof that later edits are backed up.
 
-Review the policies alongside any already present in an existing project: additional permissive policies can widen access. Verify anonymous access after deployment as well.
+Background transfer while iOS suspends the app is not guaranteed. A failed publication can leave an unreferenced immutable object. Supabase Free's global upload limit applies to the entire encoded archive; a larger bucket limit does not override it.
 
-References originally consulted on 21 October 2026: [row-level security](https://supabase.com/docs/guides/database/postgres/row-level-security), [Storage upload](https://supabase.com/docs/reference/swift/storage-from-upload). Check [current quotas and pricing](https://supabase.com/pricing) before operating a live service; no assumption of free service at scale is made.
+## Validation boundaries
+
+`OpenNotesTests/CloudSyncTests.swift` covers account response validation, verification-required signup, session identity, expired-session recovery, retry behavior, atomic publication, in-place updates, conflict preservation, persistent success timestamps, state-write rollback and local save scheduling with injected network responses. `scripts/test-rls-local.py` checks owner isolation, immutable revisions, expected-head commits and folder cycles in disposable PostgreSQL with Supabase schema stubs. Tests are not a substitute for real Supabase email delivery, Storage API calls or a signed-in chatbot.
+
+Previous live database checks verified account isolation, stale-head rejection and denial of direct head writes. Production public discovery and the beginning of OAuth were verified previously; the full real-account create/confirm/sync/assistant read-write cycle remains to be tested. Use a disposable notebook for that check and verify the return change in the app.
+
+Validation on 2026-11-01 (branch `codex/account-persistence-sync`): the final Xcode 27.1 simulator `build-for-testing` passed, as did the disposable PostgreSQL checks and `git diff --check`. An interrupted iPad run recorded 14 passing sync tests, including offline retry, concurrent-edit preservation, automatic scheduling and mocked restoration after restart. The complete unit suite and the indicator UI test did not finish: isolated simulator startup stalled, and Xcode reported `invalidDigitCount` SDK/runtime metadata errors. These are partial execution results, not a complete suite pass. Real Supabase and multi-device round trips remain unverified.
