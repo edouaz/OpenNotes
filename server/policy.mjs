@@ -1,5 +1,5 @@
 // Access policy for agents. Default-deny: a tool not listed here is treated as a write tool.
-export const READ_TOOLS = new Set(['list_folders', 'list_notebooks', 'get_notebook', 'get_history', 'get_folder_history', 'search_notebooks', 'search_notebook', 'export_pdf', 'download_notebook', 'download_pdf', 'remove_transfer']);
+export const READ_TOOLS = new Set(['list_folders', 'list_notebooks', 'get_notebook', 'get_notebook_outline', 'get_page_text', 'get_history', 'get_folder_history', 'search_notebooks', 'search_notebook', 'export_pdf', 'download_notebook', 'download_pdf', 'remove_transfer']);
 // Remove or overwrite content (recoverable from history, but never silently): need an explicit, separate permission.
 export const DESTRUCTIVE_TOOLS = new Set(['remove_element', 'remove_ink', 'reorder_pages', 'restore_revision']);
 

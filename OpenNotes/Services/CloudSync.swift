@@ -75,6 +75,8 @@ struct SyncState: Codable {
     var lastPrune: Date?
     /// Storage files of revisions already deleted from the database whose removal Storage has not confirmed yet; retried later.
     var pendingStorageDeletes: [String]?
+    /// True once the server-side metadata index has been filled for notebooks committed before it existed.
+    var metaBackfilled: Bool?
 }
 
 enum CloudSyncPhase { case local, paused, pending, syncing, synced, offline, failed, needsSignIn, conflict }
@@ -203,7 +205,27 @@ final class CloudSync: ObservableObject {
     }
     /// Deletes storage files and returns the paths Storage did NOT confirm (Storage answers 200 with only the files it actually removed,
     /// so a missing delete policy would otherwise look like success).
-    func resetPruneThrottleForTesting() { lastPruneAttempt = .distantPast }
+    func resetPruneThrottleForTesting() { lastPruneAttempt = .distantPast; lastBackfillAttempt = .distantPast }
+    private var lastBackfillAttempt = Date.distantPast
+    /// Searchable summary stored next to each revision so agents can list and filter notebooks without downloading them.
+    nonisolated static func metadata(_ note: NoteDocument, pageCount: Int) -> [String: Any] {
+        ["title": note.title, "folder_id": note.folderID.uuidString.lowercased(), "page_count": pageCount,
+         "updated_at": RemoteFolder.timestamp(note.updatedAt), "trashed": note.deletedAt != nil, "purged": note.purgedAt != nil, "favorite": note.favorite == true]
+    }
+    /// One-time: notebooks committed before the metadata index existed get their summary from the local copy. Retried hourly until it succeeds.
+    private func backfillMetadata() async {
+        guard state.metaBackfilled != true, let store, Date().timeIntervalSince(lastBackfillAttempt) > 3_600 else { return }
+        lastBackfillAttempt = Date()
+        do {
+            for (key, link) in state.links {
+                guard let id = UUID(uuidString: key), let note = store.library.note(id: id) else { continue }
+                let body = try JSONSerialization.data(withJSONObject: ["p_notebook_id": link.remoteID.uuidString.lowercased(), "p_meta": Self.metadata(note, pageCount: note.pageIDs.count)])
+                _ = try await request("rest/v1/rpc/set_notebook_meta", method: "POST", body: body)
+            }
+            state.metaBackfilled = true; try persistState()
+            Diagnostics.shared.record("sync.meta.backfilled", ["notebooks": String(state.links.count)])
+        } catch { Diagnostics.shared.failure("sync.meta.skipped", error: error) }
+    }
     private func deleteStorageObjects(_ paths: [String]) async throws -> [String] {
         struct Deleted: Decodable { let name: String }
         var remaining: [String] = []
@@ -428,7 +450,8 @@ final class CloudSync: ObservableObject {
                     let path = "\(owner.uuidString.lowercased())/\(link.remoteID.uuidString.lowercased())/\(revisionID.uuidString.lowercased()).catnote"
                     _ = try await request("storage/v1/object/notebooks/" + path, method: "POST", body: data, contentType: "application/octet-stream")
                     let commit: [String: Any] = ["p_notebook_id": link.remoteID.uuidString.lowercased(), "p_revision_id": revisionID.uuidString.lowercased(),
-                        "p_expected_revision": link.revision.map { $0.uuidString.lowercased() } as Any? ?? NSNull(), "p_checksum": checksum, "p_object_path": path]
+                        "p_expected_revision": link.revision.map { $0.uuidString.lowercased() } as Any? ?? NSNull(), "p_checksum": checksum, "p_object_path": path,
+                        "p_meta": Self.metadata(archive.note, pageCount: archive.pages.count)]
                     _ = try await request("rest/v1/rpc/commit_notebook_revision", method: "POST", body: JSONSerialization.data(withJSONObject: commit))
                     state.links[note.id.uuidString] = CloudLink(modifiedAt: archive.note.updatedAt, remoteID: link.remoteID, revision: revisionID, checksum: checksum)
                     lastUpload[note.id] = Date()
@@ -471,6 +494,7 @@ final class CloudSync: ObservableObject {
                 let now = Date(); state.lastSuccessfulSync = now; try persistState()
                 phase = .synced; status = "Synced · \(now.formatted(date: .omitted, time: .shortened))"
                 await pruneOldRevisions()
+                await backfillMetadata()
             }
         } catch {
             if !enabled { phase = .paused; status = "Sync paused · notebooks kept on this device"; return }

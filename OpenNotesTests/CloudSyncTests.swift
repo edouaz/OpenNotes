@@ -746,6 +746,46 @@ final class CloudSyncTests: XCTestCase {
         XCTAssertNil(cloud.state.pendingStorageDeletes)
         XCTAssertEqual(deletes, 2)
     }
+    func testCommitCarriesSearchableMetadata() async throws {
+        let store = await store(), owner = UUID()
+        let created = await store.create(title: "Calculus notes")
+        let id = try XCTUnwrap(created)
+        store.update(id) { $0.favorite = true }
+        _ = await store.flush()
+        var meta: [String: Any]?
+        let cloud = cloud(store, owner: owner) { request in
+            if request.url!.path.contains("commit_notebook_revision") { meta = (try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any])["p_meta"] as? [String: Any] }
+            return Data("[]".utf8)
+        }
+        await cloud.sync()
+        XCTAssertEqual(meta?["title"] as? String, "Calculus notes")
+        XCTAssertEqual(meta?["page_count"] as? Int, 1)
+        XCTAssertEqual(meta?["trashed"] as? Bool, false)
+        XCTAssertEqual(meta?["favorite"] as? Bool, true)
+        XCTAssertEqual(meta?["folder_id"] as? String, store.library.note(id: id)?.folderID.uuidString.lowercased())
+        XCTAssertNotNil(meta?["updated_at"] as? String)
+    }
+    func testMetadataBackfillRunsOnceAndSurvivesMissingFunction() async throws {
+        let store = await store(), owner = UUID()
+        _ = await store.create(title: "Old notebook")
+        _ = await store.flush()
+        var backfills = 0, missing = true
+        let cloud = cloud(store, owner: owner) { request in
+            if request.url!.path.contains("set_notebook_meta") { backfills += 1; if missing { throw NSError(domain: "Supabase", code: 404) } }
+            return Data("[]".utf8)
+        }
+        await cloud.sync()
+        XCTAssertEqual(backfills, 1)
+        XCTAssertNotEqual(cloud.state.metaBackfilled, true, "function missing: not marked done, sync itself still succeeds")
+        XCTAssertEqual(cloud.phase, .synced)
+        missing = false
+        cloud.resetPruneThrottleForTesting()
+        await cloud.sync()
+        XCTAssertEqual(backfills, 2)
+        XCTAssertEqual(cloud.state.metaBackfilled, true)
+        await cloud.sync()
+        XCTAssertEqual(backfills, 2, "never repeated once done")
+    }
     func testOlderInkStyleDefaultsAndMalformedStyleRejection() throws {
         let style = try JSONDecoder().decode(InkStyle.self, from: Data(#"{"width":4,"pattern":"dashed"}"#.utf8))
         XCTAssertEqual(style.width, 4)

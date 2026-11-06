@@ -8,14 +8,25 @@ import { PDFDocument } from 'pdf-lib';
 const ALL = { allowWrite: true, allowDestructive: true };
 
 test('official MCP client can discover and execute registered tools', async () => {
-  const fake = { from() { return { select() { return this; }, order() { return this; }, async range() { return { data: [{ notebook_id: 'owned', revision_id: 'revision' }] }; } }; } };
+  const calls = [];
+  const chain = { select(x) { calls.push(['select', x]); return this; }, eq(k, v) { calls.push(['eq', k, v]); return this; }, gt(k, v) { calls.push(['gt', k, v]); return this; }, ilike(k, v) { calls.push(['ilike', k, v]); return this; }, order(k, o) { calls.push(['order', k, o?.ascending]); return this; }, async range() { return { data: [{ notebook_id: 'owned', revision_id: 'revision', title: 'Calculus' }] }; } };
+  const fake = { from(table) { calls.push(['from', table]); return chain; } };
   const server = createServer(fake, 'a1dfd123-1234-4abc-8def-0123456789ab');
   const client = new Client({ name: 'test', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   const tools = await client.listTools(); assert.ok(tools.tools.some(tool => tool.name === 'list_notebooks'));
   const result = await client.callTool({ name: 'list_notebooks', arguments: {} });
-  assert.deepEqual(JSON.parse(result.content[0].text), [{ notebook_id: 'owned', revision_id: 'revision' }]);
+  assert.deepEqual(JSON.parse(result.content[0].text), [{ notebook_id: 'owned', revision_id: 'revision', title: 'Calculus' }]);
+  assert.deepEqual(calls.filter(c => c[0] === 'from'), [['from', 'notebook_meta']]);
+  assert.ok(calls.some(c => c[0] === 'eq' && c[1] === 'trashed' && c[2] === false), 'trashed hidden by default');
+  calls.length = 0;
+  await client.callTool({ name: 'list_notebooks', arguments: { query: '50%_off', folderID: 'c1dfd123-1234-4abc-8def-0123456789ab', updatedAfter: '2026-11-01T00:00:00Z', includeTrashed: true } });
+  assert.ok(!calls.some(c => c[0] === 'eq' && c[1] === 'trashed'), 'includeTrashed shows trashed');
+  assert.ok(calls.some(c => c[0] === 'eq' && c[1] === 'folder_id'));
+  assert.ok(calls.some(c => c[0] === 'gt' && c[1] === 'updated_at'));
+  assert.deepEqual(calls.find(c => c[0] === 'ilike'), ['ilike', 'title', '%50\\%\\_off%'], 'LIKE wildcards in the query are escaped');
+  assert.deepEqual(calls.find(c => c[0] === 'order'), ['order', 'updated_at', false]);
   await client.close(); await server.close();
 });
 
@@ -82,4 +93,31 @@ test('large-file transfers stay within the notebook owner path and reject stale 
     await call('remove_transfer',{notebookID:created.notebookID,path:saved.path}); assert.equal(fake.objects.has(saved.path),false);
     assert.equal((await call('import_uploaded_pdf',{notebookID:created.notebookID,expectedRevision:'a1dfd123-1234-4abc-8def-0123456789ab',path:upload.path})).isError,true);
   } finally {await client.close();await server.close();}
+});
+
+test('light read tools: outline, selected page text and resource-free notebook reads', async () => {
+  const server = createServer(memoryClient(), 'a1dfd123-1234-4abc-8def-0123456789ab', ALL), client = new Client({ name: 'test', version: '1.0.0' });
+  const [a, b] = InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(b), client.connect(a)]);
+  const call = async (name, args) => { const r = await client.callTool({ name, arguments: args }); assert.ok(!r.isError, JSON.stringify(r)); return JSON.parse(r.content[0].text); };
+  try {
+    const created = await call('create_notebook', { title: 'Lecture', folderID: 'c1dfd123-1234-4abc-8def-0123456789ab' }), { notebookID } = created;
+    const page2 = await call('add_page', { notebookID, expectedRevision: created.revisionID });
+    const firstPage = (await call('get_notebook', { notebookID })).archive.pages[0].id;
+    const edited = await call('update_page', { notebookID, pageID: page2.pageID, expectedRevision: page2.revisionID, text: 'Eigenvalues of a matrix', bookmark: true });
+    const light = await call('get_notebook', { notebookID });
+    assert.ok(Object.values(light.archive.resources).every(r => typeof r.omittedBytes === 'number'), 'resources omitted by default');
+    assert.ok(Object.keys((await call('get_notebook', { notebookID, includeResources: true })).archive.resources).every(n => typeof (n) === 'string'));
+    assert.equal(typeof (await call('get_notebook', { notebookID, includeResources: true })).archive.resources[light.archive.pages[0].drawingResourceID], 'string');
+    const outline = await call('get_notebook_outline', { notebookID });
+    assert.equal(outline.title, 'Lecture'); assert.equal(outline.pages.length, 2); assert.equal(outline.revisionID, edited.revisionID);
+    assert.deepEqual(outline.pages.map(p => [p.bookmark, p.textChars > 0]), [[false, false], [true, true]]);
+    const text = await call('get_page_text', { notebookID, pageIDs: [page2.pageID] });
+    assert.equal(text.pages.length, 1); assert.equal(text.pages[0].text, 'Eigenvalues of a matrix'); assert.equal(text.pages[0].truncated, false);
+    const short = await call('get_page_text', { notebookID, pageIDs: [page2.pageID], maxCharsPerPage: 100 });
+    assert.equal(short.pages[0].truncated, false);
+    assert.equal((await call('get_page_text', { notebookID })).pages.length, 2);
+    const missing = await client.callTool({ name: 'get_page_text', arguments: { notebookID, pageIDs: ['d1dfd123-1234-4abc-8def-0123456789ab'] } });
+    assert.ok(missing.isError);
+    assert.ok(firstPage);
+  } finally { await client.close(); await server.close(); }
 });

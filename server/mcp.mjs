@@ -37,11 +37,37 @@ export function createServer(client, userID, policy = {}) {
     const { data, error } = await client.from('cloud_folders').update(changes).eq('id', folderID).eq('updated_at', expectedUpdatedAt).select('id,name,parent_id,deleted_at,updated_at').single();
     if (error) throw error; return data;
   });
-  tool('list_notebooks', 'List accessible notebook IDs and current revisions.', { limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).default(0) }, async ({ limit, offset }) => {
-    const { data, error } = await client.from('notebook_heads').select('notebook_id,revision_id').order('notebook_id').range(offset, offset + limit - 1);
+  const escapeLike = text => text.replace(/[\\%_]/g, '\\$&');
+  tool('list_notebooks', 'List notebooks with title, folder, page count and dates, newest first, without downloading them. Hides trashed notebooks unless includeTrashed. Notebooks saved by an app older than the metadata index appear after the app syncs once.', {
+    query: z.string().trim().min(1).max(200).optional(), folderID: uuid.optional(), updatedAfter: z.string().datetime({ offset: true }).optional(), includeTrashed: z.boolean().default(false),
+    limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).default(0),
+  }, async ({ query, folderID, updatedAfter, includeTrashed, limit, offset }) => {
+    let request = client.from('notebook_meta').select('notebook_id,revision_id,title,folder_id,page_count,updated_at,trashed,favorite');
+    if (!includeTrashed) request = request.eq('trashed', false).eq('purged', false);
+    if (folderID) request = request.eq('folder_id', folderID);
+    if (updatedAfter) request = request.gt('updated_at', updatedAfter);
+    if (query) request = request.ilike('title', `%${escapeLike(query)}%`);
+    const { data, error } = await request.order('updated_at', { ascending: false }).order('notebook_id').range(offset, offset + limit - 1);
     if (error) throw error; return data;
-  }, true);
-  tool('get_notebook', 'Read a notebook archive including its pages and resources.', { notebookID: uuid }, async ({ notebookID }) => repository.read(notebookID), true);
+  });
+  const pageText = page => [page.text, page.recognizedText, page.pdfText?.text, page.ocrText?.text, ...(page.elements ?? []).map(item => item.text)].filter(x => typeof x === 'string' && x).join('\n');
+  tool('get_notebook', 'Read a notebook: note metadata, pages and annotations. Resources (PDF/image/ink bytes) are left out unless includeResources is true; prefer get_notebook_outline, get_page_text or render_page for large notebooks.', { notebookID: uuid, includeResources: z.boolean().default(false) }, async ({ notebookID, includeResources }) => {
+    const { archive, revisionID } = await repository.read(notebookID);
+    if (includeResources) return { archive, revisionID };
+    return { archive: { ...archive, resources: Object.fromEntries(Object.entries(archive.resources).map(([name, encoded]) => [name, { omittedBytes: Buffer.byteLength(encoded, 'base64') }])) }, revisionID };
+  });
+  tool('get_notebook_outline', 'Cheap overview of a notebook: title, folder, and for every page its ID, paper, bookmark, PDF page, annotation count and amount of text.', { notebookID: uuid }, async ({ notebookID }) => {
+    const { archive, revisionID } = await repository.read(notebookID);
+    return { revisionID, title: archive.note.title, folderID: archive.note.folderID, trashed: archive.note.deletedAt != null, favorite: archive.note.favorite === true,
+      pages: archive.pages.map((page, index) => ({ index, pageID: page.id, template: page.template, bookmark: page.bookmark === true, pdfPage: page.backgroundID && page.pdfIndex != null ? page.pdfIndex : null, annotations: (page.elements ?? []).length, textChars: pageText(page).length })) };
+  });
+  tool('get_page_text', 'Read the extracted text (typed text, PDF text, OCR, annotation text) of selected pages only. Handwriting is not transcribed; use render_page to see it.', { notebookID: uuid, pageIDs: z.array(uuid).min(1).max(20).optional(), maxCharsPerPage: z.number().int().min(100).max(100000).default(20000) }, async ({ notebookID, pageIDs, maxCharsPerPage }) => {
+    const { archive, revisionID } = await repository.read(notebookID), wanted = pageIDs && new Set(pageIDs.map(id => id.toLowerCase()));
+    if (wanted && [...wanted].some(id => !archive.pages.some(page => page.id.toLowerCase() === id))) throw new Error('Page not found');
+    const pages = archive.pages.map((page, index) => ({ page, index })).filter(({ page }) => !wanted || wanted.has(page.id.toLowerCase())).slice(0, wanted ? 20 : 20)
+      .map(({ page, index }) => { const text = pageText(page); return { index, pageID: page.id, text: text.slice(0, maxCharsPerPage), truncated: text.length > maxCharsPerPage }; });
+    return { revisionID, pages, ...(!wanted && archive.pages.length > 20 ? { note: 'Only the first 20 pages are returned; pass pageIDs for others.' } : {}) };
+  });
   tool('create_notebook', 'Create a notebook containing one blank page in a folder.', { title: z.string().trim().min(1).max(1000), folderID: uuid }, async ({ title, folderID }) => {
     const archive = createNotebook(title, folderID); return { notebookID: archive.note.id, revisionID: await repository.commit(archive) };
   });
@@ -142,7 +168,7 @@ export function createServer(client, userID, policy = {}) {
     const {data,error}=await client.from('notebook_revisions').select('id,parent_id,checksum,created_at').eq('notebook_id',notebookID).order('created_at',{ascending:false}).range(offset,offset+limit-1); if(error) throw error; return data;
   },true);
   tool('restore_revision', 'Restore a historical notebook as a new current revision, retaining all history.', {notebookID:uuid,revisionID:uuid,expectedRevision:uuid}, ({notebookID,revisionID,expectedRevision})=>mutate(notebookID,expectedRevision,async()=>{
-    const {archive}=await repository.readRevision(notebookID,revisionID); archive.note.updatedAt=swiftNow(); return archive;
+    const {archive:old}=await repository.readRevision(notebookID,revisionID), archive=structuredClone(old); archive.note.updatedAt=swiftNow(); return archive;
   }));
   tool('get_folder_history', 'Inspect recorded folder creations, moves, renames and trash changes.', {folderID:uuid,limit:z.number().int().min(1).max(100).default(50)}, async ({folderID,limit})=>{
     const {data,error}=await client.from('folder_audit').select('id,folder_id,before_state,after_state,created_at').eq('folder_id',folderID).order('id',{ascending:false}).limit(limit); if(error) throw error; return data;

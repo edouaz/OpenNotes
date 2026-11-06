@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 // Swift Date encodes seconds since 2001-01-01.
 export const swiftNow = () => Date.now() / 1000 - 978307200;
+// Searchable summary stored next to each revision (see notebook_meta); mirrors CloudSync.metadata in the app.
+export const metaOf = archive => ({ title: archive.note.title, folder_id: archive.note.folderID.toLowerCase(), page_count: archive.pages.length,
+  updated_at: new Date((archive.note.updatedAt + 978307200) * 1000).toISOString(), trashed: archive.note.deletedAt != null, purged: archive.note.purgedAt != null, favorite: archive.note.favorite === true });
 const id = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const safeResource = name => typeof name === 'string' && name.length > 0 && name.length < 128 && name !== '.' && name !== '..' && /^[\p{L}\p{N}._ -]+$/u.test(name);
 
