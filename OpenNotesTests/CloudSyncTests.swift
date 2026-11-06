@@ -517,6 +517,67 @@ final class CloudSyncTests: XCTestCase {
         XCTAssertEqual(savedState.links[id.uuidString]?.revision, revision)
     }
 
+    // In-memory Supabase stand-in shared by two "devices": storage objects, one head per notebook, revision rows.
+    private final class FakeBackend {
+        var offline = false
+        var objects: [String: Data] = [:], heads: [UUID: UUID] = [:], revisions: [UUID: RemoteRevision] = [:]
+        let owner: UUID
+        init(owner: UUID) { self.owner = owner }
+        func handle(_ request: URLRequest) throws -> Data {
+            if offline { throw URLError(.notConnectedToInternet) }
+            let path = request.url!.path
+            if path.hasPrefix("/storage/v1/object/authenticated/notebooks/") { return objects[String(path.dropFirst("/storage/v1/object/authenticated/notebooks/".count))] ?? Data() }
+            if path.hasPrefix("/storage/v1/object/notebooks/"), request.httpMethod == "POST" {
+                objects[String(path.dropFirst("/storage/v1/object/notebooks/".count))] = request.httpBody; return Data("{}".utf8)
+            }
+            if path.hasSuffix("commit_notebook_revision") {
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let notebook = UUID(uuidString: body["p_notebook_id"] as! String)!, revision = UUID(uuidString: body["p_revision_id"] as! String)!
+                let objectPath = body["p_object_path"] as! String
+                revisions[revision] = RemoteRevision(id: revision, owner_id: owner, notebook_id: notebook, parent_id: heads[notebook], checksum: body["p_checksum"] as! String, object_path: objectPath)
+                heads[notebook] = revision; return Data("{}".utf8)
+            }
+            if path == "/rest/v1/notebook_heads" { return try JSONSerialization.data(withJSONObject: heads.map { ["notebook_id": $0.key.uuidString, "revision_id": $0.value.uuidString] }) }
+            if path == "/rest/v1/notebook_revisions" {
+                let id = request.url!.query!.components(separatedBy: "id=eq.").last!.lowercased()
+                return try JSONEncoder().encode(revisions.values.filter { $0.id.uuidString.lowercased() == id })
+            }
+            return Data("[]".utf8)
+        }
+    }
+    func testOfflineEditUploadsAfterReconnectAndSecondDeviceRestoresIt() async throws {
+        let phone = await store(), tablet = await store(), owner = UUID()
+        let backend = FakeBackend(owner: owner)
+        let created = await phone.create(title: "Offline notes")
+        let id = try XCTUnwrap(created)
+        let page = try XCTUnwrap(phone.library.firstPage(in: id))
+        let drawing = InkDrawing(strokes: [PerformanceTests.stroke(samples: 40, origin: CGPoint(x: 50, y: 50), seed: 3)])
+        try await phone.disk.write(drawing.encodedData(), name: page.drawingResourceID)
+        let phoneCloud = cloud(phone, owner: owner, handler: backend.handle)
+        backend.offline = true
+        await phoneCloud.sync()
+        XCTAssertEqual(phoneCloud.phase, .offline)
+        XCTAssertNil(phoneCloud.state.links[id.uuidString], "nothing is marked synced while offline")
+        XCTAssertEqual(phone.library.note(id: id)?.title, "Offline notes", "local data untouched")
+        backend.offline = false
+        await phoneCloud.sync()
+        XCTAssertEqual(phoneCloud.phase, .synced)
+        XCTAssertEqual(backend.heads.count, 1)
+        // Phone restarts: the persisted link must prevent a duplicate upload.
+        let restarted = LibraryStore(root: phone.root); await restarted.load()
+        let restartedCloud = cloud(restarted, owner: owner, handler: backend.handle)
+        restartedCloud.state = try JSONDecoder().decode(SyncState.self, from: Data(contentsOf: phone.root.appendingPathComponent("cloud-state.json")))
+        await restartedCloud.sync()
+        XCTAssertEqual(backend.revisions.count, 1)
+        // Second device recovers the same notebook with identical ink bytes.
+        let tabletCloud = cloud(tablet, owner: owner, handler: backend.handle)
+        tablet.cloud = tabletCloud
+        await tabletCloud.sync()
+        XCTAssertEqual(tablet.library.note(id: id)?.title, "Offline notes")
+        let restored = try await tablet.archive(id)
+        XCTAssertEqual(restored.resources[try XCTUnwrap(restored.pages.first?.drawingResourceID)], try drawing.encodedData())
+    }
+
     func testUnreadableRemoteNotebookDoesNotBlockOtherDownloadsOrOverwriteIt() async throws {
         let source = await store(), destination = await store(), owner = UUID()
         let created = await source.create(title: "Readable")
