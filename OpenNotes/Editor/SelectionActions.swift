@@ -95,6 +95,7 @@ extension EditorSession {
     @discardableResult
     func affineSelection(inside path: UIBezierPath, scale: CGFloat, rotation: CGFloat, scaleY: CGFloat? = nil, anchor: CGPoint? = nil, durable: Bool = true) async -> Bool {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
+        let end = Perf.begin("lasso.affine"); defer { end() }
         guard !isReadOnly, scale.isFinite, rotation.isFinite, (0.1...10).contains(scale), await prepareEdit(durable: durable), let page else { return false }
         let snapshot = SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
         guard !snapshot.isEmpty, !snapshot.containsLockedObjects else { return false }

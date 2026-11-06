@@ -262,6 +262,7 @@ final class EditorSession: ObservableObject {
     func open(_ id: UUID? = nil) async {
         let request = UUID(); opening = request
         let started = ProcessInfo.processInfo.systemUptime
+        let endSignpost = Perf.begin("page.open"); defer { endSignpost() }
         Diagnostics.shared.record("page.open.begin", ["request": request.uuidString, "note": noteID.uuidString, "page": id?.uuidString ?? "first"])
         defer { Diagnostics.shared.record("page.open.end", ["request": request.uuidString, "currentPage": page?.id.uuidString ?? "none", "obsolete": String(opening != request), "ms": String(Int((ProcessInfo.processInfo.systemUptime - started) * 1000))]) }
         busy = true; defer { if opening == request { busy = false } }
@@ -323,6 +324,7 @@ final class EditorSession: ObservableObject {
             return saved
         }
         let batch = pending
+        let endSignpost = Perf.begin("autosave.flush"); defer { endSignpost() }
         Diagnostics.shared.record("ink.save.begin", ["pages": String(batch.count)])
         let task = Task { () -> Bool in
             defer { writeTask = nil }
@@ -330,7 +332,7 @@ final class EditorSession: ObservableObject {
                 var savedResources: [UUID: String] = [:]
                 for (id, item) in batch {
                     let (_, drawing, _) = item
-                    let data = try await Task.detached(priority: .utility) { try drawing.encodedData() }.value
+                    let data = try await Task.detached(priority: .utility) { try Perf.measure("autosave.encode") { try drawing.encodedData() } }.value
                     savedResources[id] = try await store.disk.writeDrawingRevision(data)
                 }
                 var snapshot = store.library

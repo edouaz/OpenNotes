@@ -20,6 +20,7 @@ extension EditorSession {
     @discardableResult
     func moveSelection(inside path: UIBezierPath, by requested: CGPoint, durable: Bool = true) async -> Bool {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
+        let end = Perf.begin("lasso.move"); defer { end() }
         guard !isReadOnly, requested.x.isFinite, requested.y.isFinite, let pageID = page?.id,
               await prepareEdit(durable: durable), let original = page, original.id == pageID else { return false }
         let snapshot = SelectionMoveSnapshot(page: original, drawing: canvas.drawing, path: path, settings: toolSettings)
@@ -42,6 +43,7 @@ extension EditorSession {
     @discardableResult
     func transformSelection(inside path: UIBezierPath, scale: CGFloat, deleting: Bool = false) async -> Bool {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
+        let end = Perf.begin("lasso.transform"); defer { end() }
         guard !isReadOnly, scale.isFinite, (0.1...10).contains(scale), await flush(), let original = page else { return false }
         let drawing = canvas.drawing
         let snapshot = SelectionMoveSnapshot(page: original, drawing: drawing, path: path, settings: toolSettings)
@@ -91,6 +93,7 @@ struct SelectionMoveSnapshot {
     var isEmpty: Bool { strokeIndices.isEmpty && elementIDs.isEmpty }
 
     init(page: NotePage, drawing: InkDrawing, path: UIBezierPath, settings: EditorToolSettings) {
+        let end = Perf.begin("lasso.snapshot"); defer { end() }
         let selectedElements = DocumentClipboard.selectedElements(page, inside: path, settings: settings)
         var selectedIDs = Set(selectedElements.map(\.id))
         // A selected parent owns its descendants, independently of lasso filters.

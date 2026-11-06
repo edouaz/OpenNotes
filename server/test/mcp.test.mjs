@@ -5,6 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from '../mcp.mjs';
 import { memoryClient } from './helpers.mjs';
 import { PDFDocument } from 'pdf-lib';
+const ALL = { allowWrite: true, allowDestructive: true };
 
 test('official MCP client can discover and execute registered tools', async () => {
   const fake = { from() { return { select() { return this; }, order() { return this; }, async range() { return { data: [{ notebook_id: 'owned', revision_id: 'revision' }] }; } }; } };
@@ -19,7 +20,7 @@ test('official MCP client can discover and execute registered tools', async () =
 });
 
 test('SDK edits, conflicts, trash, image reads and history restoration publish real native archives', async () => {
-  const server=createServer(memoryClient(),'a1dfd123-1234-4abc-8def-0123456789ab'), client=new Client({name:'test',version:'1.0.0'});
+  const server=createServer(memoryClient(),'a1dfd123-1234-4abc-8def-0123456789ab',ALL), client=new Client({name:'test',version:'1.0.0'});
   const [a,b]=InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(b),client.connect(a)]);
   const call=async(name,args)=>{
     const result=await client.callTool({name,arguments:args});
@@ -51,7 +52,7 @@ test('folder tool requires current timestamp and does not overwrite a stale chan
     update(value){changes=value;return this;},eq(key,value){filters[key]=value;return this;},select(){return this;},
     async single(){if(filters.id!==row.id||filters.updated_at!==row.updated_at)return {error:new Error('Folder revision conflict')}; row={...row,...changes};return {data:row};}
   };}};
-  const server=createServer(fake,'a1dfd123-1234-4abc-8def-0123456789ab'), client=new Client({name:'test',version:'1.0.0'});
+  const server=createServer(fake,'a1dfd123-1234-4abc-8def-0123456789ab',ALL), client=new Client({name:'test',version:'1.0.0'});
   const [a,b]=InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(b),client.connect(a)]);
   try {
     const stale=await client.callTool({name:'update_folder',arguments:{folderID,name:'Wrong',expectedUpdatedAt:'2026-10-30T10:00:00Z'}});
@@ -65,7 +66,7 @@ test('folder tool requires current timestamp and does not overwrite a stale chan
 
 
 test('large-file transfers stay within the notebook owner path and reject stale imports', async () => {
-  const fake=memoryClient(), server=createServer(fake,'a1dfd123-1234-4abc-8def-0123456789ab'), client=new Client({name:'test',version:'1.0.0'});
+  const fake=memoryClient(), server=createServer(fake,'a1dfd123-1234-4abc-8def-0123456789ab',ALL), client=new Client({name:'test',version:'1.0.0'});
   const [a,b]=InMemoryTransport.createLinkedPair(); await Promise.all([server.connect(b),client.connect(a)]);
   const call=async(name,args)=>client.callTool({name,arguments:args});
   try {

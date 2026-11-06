@@ -73,6 +73,8 @@ struct SyncState: Codable {
     var seen: Set<UUID> = []
     var lastSuccessfulSync: Date?
     var lastPrune: Date?
+    /// Storage files of revisions already deleted from the database whose removal Storage has not confirmed yet; retried later.
+    var pendingStorageDeletes: [String]?
 }
 
 enum CloudSyncPhase { case local, paused, pending, syncing, synced, offline, failed, needsSignIn, conflict }
@@ -199,20 +201,47 @@ final class CloudSync: ObservableObject {
             UIApplication.shared.endBackgroundTask(task)
         }
     }
-    /// Keeps only the newest 10 revisions per notebook (server enforces the head is kept). At most once a day; failures are harmless.
+    /// Deletes storage files and returns the paths Storage did NOT confirm (Storage answers 200 with only the files it actually removed,
+    /// so a missing delete policy would otherwise look like success).
+    func resetPruneThrottleForTesting() { lastPruneAttempt = .distantPast }
+    private func deleteStorageObjects(_ paths: [String]) async throws -> [String] {
+        struct Deleted: Decodable { let name: String }
+        var remaining: [String] = []
+        for start in stride(from: 0, to: paths.count, by: 100) {
+            let batch = Array(paths[start..<min(start + 100, paths.count)])
+            do {
+                let data = try await request("storage/v1/object/notebooks", method: "DELETE", body: JSONSerialization.data(withJSONObject: ["prefixes": batch]))
+                // An unreadable success body is treated as confirmed; an empty or partial list is not.
+                guard let confirmed = try? JSONDecoder().decode([Deleted].self, from: data) else { continue }
+                let names = Set(confirmed.map(\.name))
+                remaining += batch.filter { !names.contains($0) }
+            } catch {
+                if (error as NSError).domain == "Supabase" && (error as NSError).code == 401 { throw error }
+                remaining += batch
+            }
+        }
+        return remaining
+    }
+    /// Keeps only the newest 10 revisions per notebook (the server never deletes the head) and removes their files. At most hourly;
+    /// the database prune runs daily, unconfirmed file deletions are retried on every attempt. Failures are harmless.
     private func pruneOldRevisions() async {
-        guard Date().timeIntervalSince(state.lastPrune ?? .distantPast) > 86_400, Date().timeIntervalSince(lastPruneAttempt) > 3_600 else { return }
+        let due = Date().timeIntervalSince(state.lastPrune ?? .distantPast) > 86_400
+        guard due || !(state.pendingStorageDeletes ?? []).isEmpty, Date().timeIntervalSince(lastPruneAttempt) > 3_600 else { return }
         lastPruneAttempt = Date()
         do {
-            struct Removed: Decodable { let removed_path: String }
-            let data = try await request("rest/v1/rpc/prune_my_revisions", method: "POST", body: Data(#"{"p_keep":10}"#.utf8))
-            let paths = try JSONDecoder().decode([Removed].self, from: data).map(\.removed_path)
-            for start in stride(from: 0, to: paths.count, by: 100) {
-                let body = try JSONSerialization.data(withJSONObject: ["prefixes": Array(paths[start..<min(start + 100, paths.count)])])
-                _ = try? await request("storage/v1/object/notebooks", method: "DELETE", body: body)
+            var pruned = 0
+            if due {
+                struct Removed: Decodable { let removed_path: String }
+                let data = try await request("rest/v1/rpc/prune_my_revisions", method: "POST", body: Data(#"{"p_keep":10}"#.utf8))
+                let paths = try JSONDecoder().decode([Removed].self, from: data).map(\.removed_path)
+                pruned = paths.count
+                // Rows are already gone: remember the files before trying to delete them so a crash or error cannot orphan them forever.
+                state.pendingStorageDeletes = (state.pendingStorageDeletes ?? []) + paths
+                state.lastPrune = Date(); try persistState()
             }
-            state.lastPrune = Date(); try persistState()
-            Diagnostics.shared.record("sync.pruned", ["revisions": String(paths.count)])
+            let remaining = try await deleteStorageObjects(state.pendingStorageDeletes ?? [])
+            state.pendingStorageDeletes = remaining.isEmpty ? nil : remaining; try persistState()
+            Diagnostics.shared.record("sync.pruned", ["revisions": String(pruned), "filesPending": String(remaining.count)])
         } catch { Diagnostics.shared.failure("sync.prune.skipped", error: error) }
     }
     func foregrounded() {
@@ -491,17 +520,13 @@ final class CloudSync: ObservableObject {
             }
             // Rows first: if the RPC is missing or fails nothing has been destroyed. Orphaned files are only wasted space.
             _ = try await request("rest/v1/rpc/reset_my_notebook_data", method: "POST", body: Data("{}".utf8))
-            var orphaned = 0
-            for start in stride(from: 0, to: paths.count, by: 100) {
-                let body = try JSONSerialization.data(withJSONObject: ["prefixes": Array(paths[start..<min(start + 100, paths.count)])])
-                do { _ = try await request("storage/v1/object/notebooks", method: "DELETE", body: body) }
-                catch { if (error as NSError).domain == "Supabase" && (error as NSError).code == 401 { throw error }; orphaned += min(100, paths.count - start) }
-            }
+            let orphaned = try await deleteStorageObjects(paths)
             status = "Resetting this device…"
             try await store.resetLocal()
             state = SyncState(); state.owner = auth.user.id; notebookFailures = [:]
+            if !orphaned.isEmpty { state.pendingStorageDeletes = orphaned }
             try persistState()
-            phase = .synced; status = orphaned == 0 ? "Reset complete · this device and your cloud account are empty" : "Reset complete · \(orphaned) old cloud file(s) could not be removed (wasted space only)"
+            phase = .synced; status = orphaned.isEmpty ? "Reset complete · this device and your cloud account are empty" : "Reset complete · \(orphaned.count) old cloud file(s) not removed yet; they will be retried (wasted space only)"
         } catch {
             phase = .failed
             let hint = (error as NSError).domain == "Supabase" && (error as NSError).code == 404 ? " Apply migration 20261105000001_clean_reset.sql to Supabase first." : ""

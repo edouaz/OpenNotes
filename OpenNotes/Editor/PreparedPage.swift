@@ -7,6 +7,7 @@ struct PreparedPage {
     let artwork: PageArtwork
 
     static func load(_ page: NotePage, disk: DiskStore, reusing artwork: PageArtwork? = nil) async throws -> PreparedPage {
+        let end = Perf.begin("page.prepare"); defer { end() }
         guard let bytes = try await disk.read(page.drawingResourceID) else { throw CocoaError(.fileNoSuchFile) }
         let background: Data?
         if let name = page.backgroundID { background = try await disk.read(name) } else { background = nil }

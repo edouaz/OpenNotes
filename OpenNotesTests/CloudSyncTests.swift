@@ -654,7 +654,7 @@ final class CloudSyncTests: XCTestCase {
         let cloud = cloud(store, owner: owner) { request in
             let path = request.url!.path
             if path.contains("prune_my_revisions") { prunes += 1; return Data(#"[{"removed_path":"a/b/old.catnote"}]"#.utf8) }
-            if request.httpMethod == "DELETE" { deleted.append(String(data: request.httpBody!, encoding: .utf8)!) }
+            if request.httpMethod == "DELETE" { deleted.append(String(data: request.httpBody!, encoding: .utf8)!); return Data(#"[{"name":"a/b/old.catnote"}]"#.utf8) }
             return Data("[]".utf8)
         }
         await cloud.sync()
@@ -662,8 +662,28 @@ final class CloudSyncTests: XCTestCase {
         XCTAssertEqual(deleted.count, 1)
         XCTAssertTrue(deleted[0].contains("old.catnote"))
         XCTAssertNotNil(cloud.state.lastPrune)
+        XCTAssertNil(cloud.state.pendingStorageDeletes, "confirmed deletions leave nothing pending")
         await cloud.sync()
         XCTAssertEqual(prunes, 1, "no second prune within a day")
+    }
+    func testUnconfirmedStorageDeletionIsRememberedAndRetried() async throws {
+        let store = await store(), owner = UUID()
+        _ = await store.create(title: "Orphans")
+        var confirm = false, deletes = 0
+        let cloud = cloud(store, owner: owner) { request in
+            let path = request.url!.path
+            if path.contains("prune_my_revisions") { return Data(#"[{"removed_path":"a/b/old.catnote"}]"#.utf8) }
+            if request.httpMethod == "DELETE" { deletes += 1; return Data((confirm ? #"[{"name":"a/b/old.catnote"}]"# : "[]").utf8) }
+            return Data("[]".utf8)
+        }
+        await cloud.sync()   // Storage answers 200 but removed nothing (e.g. missing delete policy)
+        XCTAssertEqual(cloud.state.pendingStorageDeletes, ["a/b/old.catnote"])
+        XCTAssertEqual(deletes, 1)
+        confirm = true
+        cloud.resetPruneThrottleForTesting()
+        await cloud.sync()
+        XCTAssertNil(cloud.state.pendingStorageDeletes)
+        XCTAssertEqual(deletes, 2)
     }
     func testOlderInkStyleDefaultsAndMalformedStyleRejection() throws {
         let style = try JSONDecoder().decode(InkStyle.self, from: Data(#"{"width":4,"pattern":"dashed"}"#.utf8))

@@ -5,14 +5,21 @@ import { editNotebook, swiftNow } from './archive.mjs';
 import { createNotebook, addBlankPage, addElement, searchArchive, importPDF, addImage, addInk, editPage, reorderPages, updateElement, removeInk } from './operations.mjs';
 import { NotebookRepository } from './repository.mjs';
 import { exportPDF, renderPage } from './render.mjs';
+import { toolAllowed, toolMode } from './policy.mjs';
 const uuid = z.string().uuid();
 const response = value => { const text = JSON.stringify(value); if (Buffer.byteLength(JSON.stringify(text)) > 3 * 1024 * 1024) throw new Error('Response too large; use download_notebook or download_pdf when applicable'); return { content: [{ type: 'text', text }] }; };
 
 // The caller must authenticate and pass a user-scoped Supabase client.
-export function createServer(client, userID) {
+// Read-only unless the operator grants write (and, separately, destructive) permission.
+export function createServer(client, userID, policy = {}) {
   const server = new McpServer({ name: 'opennotes', version: '0.1.0' });
   const repository = new NotebookRepository(client, userID);
-  const tool = (name, description, inputSchema, run, readOnlyHint = false) => server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint } }, async args => response(await run(args)));
+  const tool = (name, description, inputSchema, run) => {
+    if (!toolAllowed(name, policy)) return; // not registered: the agent cannot even see it
+    const mode = toolMode(name);
+    return server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: mode === 'read', destructiveHint: mode === 'destructive' } }, async args => response(await run(args)));
+  };
+  const trashAllowed = () => { if (!(policy.allowWrite && policy.allowDestructive)) throw new Error('Trashing requires destructive permission'); };
   tool('list_folders', 'List folders, including their parent and trash state.', { limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).default(0) }, async ({ limit, offset }) => {
     const { data, error } = await client.from('cloud_folders').select('id,name,parent_id,deleted_at,updated_at').order('id').range(offset, offset + limit - 1);
     if (error) throw error; return data;
@@ -22,6 +29,7 @@ export function createServer(client, userID) {
     if (error) throw error; return data;
   });
   tool('update_folder', 'Rename, move, trash or restore a folder.', { folderID: uuid, name: z.string().trim().min(1).max(255).optional(), parentID: uuid.nullable().optional(), trashed: z.boolean().optional(), expectedUpdatedAt: z.string().datetime({ offset: true }) }, async ({ folderID, name, parentID, trashed, expectedUpdatedAt }) => {
+    if (trashed === true) trashAllowed();
     const changes = { updated_at: new Date().toISOString() };
     if (name !== undefined) changes.name = name;
     if (parentID !== undefined) changes.parent_id = parentID;
@@ -40,6 +48,7 @@ export function createServer(client, userID) {
   tool('update_notebook', 'Update notebook metadata; pass the revision last read to prevent overwriting a concurrent change.', {
     notebookID: uuid, expectedRevision: uuid, title: z.string().trim().min(1).max(1000).optional(), favorite: z.boolean().optional(), folderID: uuid.optional(), trashed: z.boolean().optional(),
   }, async ({ notebookID, expectedRevision, trashed, ...changes }) => {
+    if (trashed === true) trashAllowed();
     const { archive, revisionID } = await repository.read(notebookID);
     if (revisionID !== expectedRevision) throw new Error('Notebook revision conflict');
     if (trashed !== undefined) changes.deletedAt = trashed ? swiftNow() : null;

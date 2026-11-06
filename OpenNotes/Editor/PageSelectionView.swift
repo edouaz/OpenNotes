@@ -308,6 +308,7 @@ final class SelectionDragPreview: UIView {
     }
     private static func render(page: NotePage, artwork: PageArtwork?, drawing: InkDrawing, snapshot: SelectionMoveSnapshot,
                                zoom: CGFloat, offset: CGPoint, size: CGSize, displayScale: CGFloat) -> Rendered? {
+        let end = Perf.begin("lasso.render"); defer { end() }
         let visible = CGRect(x: offset.x / zoom, y: offset.y / zoom, width: size.width / zoom, height: size.height / zoom)
             .intersection(CGRect(origin: .zero, size: snapshot.pageSize))
         guard !visible.isNull else { return nil }

@@ -74,6 +74,7 @@ actor DiskStore {
     }
     func thumbnail(_ page: NotePage, pixels requestedPixels: Int = 160) async throws -> UIImage {
         let pixels = min(1600, max(80, requestedPixels))
+        let endSignpost = Perf.begin("disk.thumbnail"); defer { endSignpost() }
         await acquireThumbnailRenderer()
         defer { releaseThumbnailRenderer() }
         try Task.checkCancellation()
@@ -152,6 +153,7 @@ actor DiskStore {
     // so the autosave path skips two full library decodes (backup validation and revision pruning).
     private var lastWritten: (data: Data, resources: Set<String>)?
     func save(_ library: NoteLibrarySnapshot) throws {
+        let end = Perf.begin("disk.save"); defer { end() }
         try validate(library)
         let url = root.appendingPathComponent("library.json")
         let journal = root.appendingPathComponent("library.pending.json")

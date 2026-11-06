@@ -121,6 +121,7 @@ enum PageRenderer {
         foreground?.paperImage(from: inkBounds, scale: inkScale).draw(in: inkBounds)
     }
     static func image(_ page: NotePage, data: Data?, drawing: InkDrawing? = nil, resources: [String: Data] = [:], pdfPage: CGPDFPage? = nil, images: [String: UIImage] = [:], scale: CGFloat = 1) -> UIImage {
+        let end = Perf.begin("render.image"); defer { end() }
         let format = UIGraphicsImageRendererFormat(); format.scale = scale; format.opaque = true
         let bounds = CGRect(origin: .zero, size: size(page))
         return UIGraphicsImageRenderer(size: bounds.size, format: format).image { renderer in
@@ -140,6 +141,7 @@ enum PageRenderer {
         }
     }
     static func export(_ archive: NotebookArchive, indices: ClosedRange<Int>, output: URL) throws {
+        let end = Perf.begin("render.export"); defer { end() }
         try archive.validate()
         guard indices.lowerBound >= 0, indices.upperBound < archive.pages.count else { throw CocoaError(.validationMissingMandatoryProperty) }
         let drawings = try archive.pages.map { page -> InkDrawing in

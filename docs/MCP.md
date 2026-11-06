@@ -19,6 +19,17 @@ Configure only:
 - `PUBLIC_ORIGIN`: the public HTTPS origin, without a path or trailing slash.
 - `PORT`: internal port, default `3000`.
 
+Optional access policy (all default to the safest value):
+
+- `ALLOW_WRITE=true`: register the write tools. **Default: read-only**; write tools are not even listed to the agent.
+- `ALLOW_DESTRUCTIVE=true` (needs `ALLOW_WRITE`): register `remove_element`, `remove_ink`, `reorder_pages`, `restore_revision` and allow `trashed: true`. These carry `destructiveHint`. Unknown future tools default to "write".
+- `REQUIRE_OAUTH_CLIENT=true`: accept only tokens that carry a `client_id` claim (issued through the OAuth consent flow), rejecting the app's own password-login session tokens. Leave off until a real client authorization has been validated end to end, then turn it on.
+- `RATE_LIMIT_PER_MIN` (default 120 per user), `IP_RATE_LIMIT_PER_MIN` (default 600 per address, applied before the token check): HTTP 429 with `Retry-After`.
+- `MAX_BODY_MB` (default 8; Vercel itself caps bodies at 4.5 MB): larger files use the transfer tools.
+- `ALLOWED_ORIGINS`: extra browser origins accepted besides `PUBLIC_ORIGIN`. Requests carrying any other `Origin` header get 403 (MCP clients send none).
+
+Token audience: Supabase's OAuth server does not issue resource-bound (RFC 8707) tokens, so the audience cannot be pinned to this server; the `client_id` requirement above is the available narrowing. Revoke a client in Supabase Auth.
+
 TLS terminates at Vercel. The process listens internally over HTTP. The Dockerfile supplies regular, bold, italic and bold-italic Unicode fonts through `NOTES_FONT_*`; direct local runs default to Helvetica unless those paths are provided.
 
 Enable the [Supabase OAuth 2.1 server](https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication) and dynamic client registration. Set the Auth Site URL to `PUBLIC_ORIGIN` and the authorization path to `/oauth/consent`. Configure asymmetric signing keys as required by Supabase's OAuth server. Connect the chatbot to `PUBLIC_ORIGIN/mcp`. OAuth discovery identifies Supabase Auth as the issuer; the consent page signs the user into that same account and explicitly offers Allow/Deny. Revoke client grants through Supabase Auth. The service validates every bearer token with `getUser` and makes storage/database requests with the user's token, preserving RLS. No administrator key is used.
@@ -36,7 +47,7 @@ Tools support:
 - Adding and editing text, highlights, rectangles, ellipses, lines, arrows and sticky notes; inserting PNG/JPEG images; adding and removing editable native ink strokes.
 - Moving/rotating a sticky note together with attached content. Resizing its frame preserves ink coordinates. Removing it also removes its attached content from the new revision.
 - PDF export and page renders returned as actual MCP PNG image content so chatbots can inspect handwriting and visual exercises.
-- Reading revision history and restoring a historical archive as a new head. Every notebook mutation records an immutable revision and an audit entry. There is no permanent-delete operation.
+- Reading revision history and restoring a historical archive as a new head. Every notebook mutation records an immutable revision and an audit entry. There is no permanent-delete operation. The app keeps only the newest 10 revisions per notebook (older ones are pruned daily), so "recoverable through revision history" means those ten.
 
 Every existing-notebook write requires the revision returned by the previous read. A stale writer receives a conflict and must read again. `reorder_pages` omits/removes pages only from the new revision; at least one must remain. Typed annotation edits replace that annotation's previous rich formatting. Archive reads include base64 resources and can be large; use `render_page` or text search when sufficient. For larger files, use `create_upload`, PUT bytes to its signed URL with `Content-Type: application/octet-stream`, then call `import_uploaded_pdf` or `add_uploaded_image`. Imports delete their transfer after publishing; if `cleanupRequired` is returned, call `remove_transfer`. `download_notebook` and `download_pdf` return private five-minute links and a path; call `remove_transfer` after downloading. A signed URL is a bearer secret. URL expiration does not delete its object, so unused or failed transfers need explicit cleanup. These temporary files use a separate private, owner-scoped bucket and never change immutable history. Search uses stored text/OCR, and does not perform fresh handwriting recognition.
 
@@ -46,7 +57,7 @@ Every existing-notebook write requires the revision returned by the previous rea
 
 The RPC is intentionally `SECURITY DEFINER`: authenticated users cannot directly update heads or forge audit records. It checks `auth.uid()` and uses an empty fixed search path. Supabase's security advisor reports [the intentional authenticated definer warning](https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable) for this elevated function; the warning is understood and should remain part of review when changing the RPC. Folder audit writes use an equally narrow owner-checked trigger. All exposed tables enforce account RLS; audit/history are readable but cannot be edited or deleted by clients.
 
-Vercel caps HTTP request and response bodies at 4.5 MB, including base64 encoding; use the transfer tools for larger files. This Supabase Free project has a [maximum 50 MB file upload limit](https://supabase.com/docs/guides/storage/uploads/file-limits), which takes precedence over bucket limits and applies to the entire encoded notebook archive. Inputs are otherwise bounded: 70 MiB direct-server HTTP request bodies, 50 MiB PDF import, 20 MiB image import, 150 MiB stored archives, 10,000 pages, and bounded annotation/ink complexity. Archives validate structure, safe resource names/base64, page references, element parents and ink geometry. PDF/image decoders additionally validate imported media. Oversized or unsupported files return errors instead of publishing partial changes.
+Vercel caps HTTP request and response bodies at 4.5 MB, including base64 encoding; use the transfer tools for larger files. This Supabase Free project has a [maximum 50 MB file upload limit](https://supabase.com/docs/guides/storage/uploads/file-limits), which takes precedence over bucket limits and applies to the entire encoded notebook archive. Inputs are otherwise bounded: `MAX_BODY_MB` direct HTTP request bodies (default 8 MiB), 50 MiB PDF import, 20 MiB image import, 150 MiB stored archives, 10,000 pages, and bounded annotation/ink complexity. Archives validate structure, safe resource names/base64, page references, element parents and ink geometry. PDF/image decoders additionally validate imported media. Oversized or unsupported files return errors instead of publishing partial changes.
 
 ## Rendering limits and verification
 

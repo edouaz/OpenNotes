@@ -3,7 +3,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils f
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY archive.mjs index.mjs mcp.mjs operations.mjs render.mjs repository.mjs ./
+COPY *.mjs ./
 COPY public ./public
 USER node
 ENV PORT=3000 \

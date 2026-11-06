@@ -340,6 +340,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
                              id: strokeID, tool: capturedTool, width: Double(ink.width), settings: processingSettings)
     }
     private func showPreview() {
+        let end = Perf.begin(capturedEraser != nil ? "erase.preview" : "ink.preview"); defer { end() }
         if let eraser = capturedEraser {
             if let point = buffer.samples.last?.location {
                 showToolCursor(at: point, width: eraser.width + (capturedSettings.eraserMode == .standard ? 4 : 0), color: .darkGray, fill: .white.withAlphaComponent(0.12))

@@ -1,4 +1,19 @@
 import Foundation
+import os
+
+// Signposts for Instruments (os_signpost track "fr.opennotes / perf") and XCTOSSignpostMetric.
+// Use `let end = Perf.begin("name"); defer { end() }`; names are StaticString, so they cost nothing when not profiling.
+enum Perf {
+    static let signposter = OSSignposter(subsystem: "fr.opennotes", category: "perf")
+    static func begin(_ name: StaticString) -> () -> Void {
+        let state = signposter.beginInterval(name, id: signposter.makeSignpostID())
+        return { signposter.endInterval(name, state) }
+    }
+    @discardableResult static func measure<T>(_ name: StaticString, _ body: () throws -> T) rethrows -> T {
+        let end = begin(name); defer { end() }
+        return try body()
+    }
+}
 
 final class Diagnostics {
     static let shared = Diagnostics(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("OpenNotesDiagnostics"))
