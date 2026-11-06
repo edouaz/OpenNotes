@@ -14,5 +14,8 @@
   "scripts": {
     "start": "node index.mjs",
     "test": "node --test test/*.test.mjs"
+  },
+  "bin": {
+    "opennote": "cli.mjs"
   }
 }

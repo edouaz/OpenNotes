@@ -66,3 +66,22 @@ Page images are automatically scaled down when necessary to fit the Vercel respo
 The server renderer uses different fonts and text layout from UIKit. Complex RTF tables/lists, exact native font shaping, pressure/opacity interpolation and marker blending may differ. Rendered PNG/PDF output is suitable for visual reading, but is not a byte-for-byte or pixel-identical native export. Retain the native archive for editable recovery; no renderer output replaces stored ink or resources. A native-versus-server visual comparison on real notes remains to be done.
 
 `npm test` passes 20 tests covering archive rejection, edits without mutating original archives, attached sticky ink, PDF import/export and rotation/crop, mixed-style RTF, actual PNG rendering, checksum tampering, publication conflicts, private transfers, official MCP SDK discovery/execution and unauthenticated HTTP discovery/challenges. Live database checks are separate from these local tests. Production discovery, registration, authorization redirect, visible login form and anonymous rejection are verified. Token exchange and authenticated production operations still require signing in with an actual app account; no user credentials were entered during validation. Production rendering load has not been validated.
+
+## Local CLI and stdio MCP (`server/cli.mjs`)
+
+Read-only by default, same repository/MCP code, user session only (RLS), no service key. Set `OPENNOTES_SUPABASE_URL` and `OPENNOTES_SUPABASE_KEY` (publishable key), then:
+
+```
+node server/cli.mjs login you@example.com     # session stored in ~/.opennotes/session.json (0600)
+node server/cli.mjs documents list [query]
+node server/cli.mjs documents get <id>        # resources omitted
+node server/cli.mjs documents export <id> out.catnote
+node server/cli.mjs sync status
+node server/cli.mjs mcp serve [--allow-write] # stdio MCP for a local agent host; destructive tools never exposed
+```
+
+`list`, `sync status` and `list_notebooks` need migration `20261106000002_notebook_meta.sql` and one app sync. Revision history keeps the newest 10 per notebook once `20261106000001_prune_revisions.sql` is applied.
+
+## Remote deployment check (2026-11-06)
+
+Discovery returns 200 and unauthenticated calls 401, but a request with a foreign `Origin` also returns 401 instead of 403: **the deployed build predates the Origin check, rate limits and read-only policy in this repo.** Redeploy before relying on them. Full OAuth token flow with a real client is still unverified; keep `REQUIRE_OAUTH_CLIENT` off until it is.
