@@ -71,18 +71,19 @@ function validateInk(encoded, elements) {
     if (!['pen','fountainPen','marker','pencil','monoline'].includes(stroke.ink?.inkType) ||
         !Array.isArray(stroke.ink?.rgbaSRGB) || stroke.ink.rgbaSRGB.length !== 4 || !stroke.ink.rgbaSRGB.every(n => Number.isFinite(n) && n >= 0 && n <= 1) ||
         !Array.isArray(stroke.path?.controlPoints) || stroke.path.controlPoints.length > 1000000 || !Number.isFinite(stroke.path.creationDate) ||
-        !Array.isArray(stroke.rawSamples) || stroke.rawSamples.length > 1000000 ||
+        (stroke.rawSamples !== undefined && (!Array.isArray(stroke.rawSamples) || stroke.rawSamples.length > 1000000)) ||
         !Number.isInteger(stroke.randomSeed) || stroke.randomSeed < 0 || stroke.randomSeed > 4294967295 ||
         !Array.isArray(stroke.transform) || stroke.transform.length !== 6 || !stroke.transform.every(n => Number.isFinite(n) && Math.abs(n) <= 1000000) ||
         Math.abs(stroke.transform[0]*stroke.transform[3]-stroke.transform[1]*stroke.transform[2]) <= 1e-12) throw new Error('Invalid stroke');
-    sampleCount += stroke.path.controlPoints.length+stroke.rawSamples.length;
+    const raw = stroke.rawSamples ?? [];   // omitted when identical to path.controlPoints
+    sampleCount += stroke.path.controlPoints.length+raw.length;
     if (sampleCount > 4000000) throw new Error('Ink sample limit exceeded');
-    for (const samples of [stroke.path.controlPoints,stroke.rawSamples]) {
+    for (const samples of [stroke.path.controlPoints,raw]) {
       let previous = -1;
       for (const sample of samples) {
         if (!pair(sample.location) || !pair(sample.size) || sample.size.some(n => n < 0 || n > 4096) ||
             ![sample.timeOffset,sample.opacity,sample.force,sample.azimuth,sample.altitude].every(Number.isFinite) || sample.timeOffset < 0 ||
-            sample.opacity < 0 || sample.opacity > 1 || sample.force < 0 || sample.force > 1 || (samples === stroke.rawSamples && sample.timeOffset < previous)) throw new Error('Invalid ink point');
+            sample.opacity < 0 || sample.opacity > 1 || sample.force < 0 || sample.force > 1 || (samples === raw && sample.timeOffset < previous)) throw new Error('Invalid ink point');
         previous = sample.timeOffset;
       }
     }

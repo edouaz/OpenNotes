@@ -152,7 +152,8 @@ struct InkStroke: Codable, Identifiable {
         let box = try decoder.container(keyedBy: CodingKeys.self)
         id = try box.decode(UUID.self, forKey: .id); ink = try box.decode(InkInk.self, forKey: .ink)
         path = try box.decode(InkStrokePath.self, forKey: .path)
-        rawSamples = try box.decode([InkStrokePoint].self, forKey: .rawSamples)
+        // Omitted when identical to `path` (the usual case): halves ink size. Older files always carry both.
+        rawSamples = try box.decodeIfPresent([InkStrokePoint].self, forKey: .rawSamples) ?? path.controlPoints
         style = try box.decodeIfPresent(InkStyle.self, forKey: .style)
         vectorOutline = try box.decodeIfPresent(InkVectorPath.self, forKey: .vectorOutline)
         parentID = try box.decodeIfPresent(UUID.self, forKey: .parentID)
@@ -172,7 +173,8 @@ struct InkStroke: Codable, Identifiable {
         try box.encodeIfPresent(isLocked, forKey: .isLocked)
         try box.encodeIfPresent(zIndex, forKey: .zIndex)
         try box.encode(id, forKey: .id); try box.encode(ink, forKey: .ink)
-        try box.encode(path, forKey: .path); try box.encode(rawSamples, forKey: .rawSamples)
+        try box.encode(path, forKey: .path)
+        if rawSamples != path.controlPoints { try box.encode(rawSamples, forKey: .rawSamples) }
         try box.encodeIfPresent(style, forKey: .style); try box.encode(randomSeed, forKey: .randomSeed)
         try box.encode([transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty].map(Double.init), forKey: .transform)
     }

@@ -312,4 +312,34 @@ final class StorageAndPDFTests: XCTestCase {
         XCTAssertNotNil(store.library.note(id: copy)?.deletedAt)
         XCTAssertNotEqual(CloudSync.checksum(try CloudSync.encode(archive)), CloudSync.checksum(try CloudSync.encode(remote)))
     }
+
+    func testPDFTextLivesInASidecarThatSurvivesReloadAndLegacyFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let disk = DiskStore(root: root)
+        var home = NotebookFolder(id: NotebookFolder.homeID, name: "Home")
+        var note = NoteDocument(folderID: home.id, title: "PDF")
+        var page = NotePage(noteID: note.id, index: 0, format: .a4Portrait, template: .blank, drawingResourceID: "d")
+        page.pdfText = PageTextContent(source: .pdf, status: .available, text: "Searchable original", blocks: [])
+        page.ocrText = PageTextContent(source: .ocr, status: .available, text: "handwriting", blocks: [], drawingRevision: 0)
+        note.pageIDs = [page.id]; home.noteIDs = [note.id]
+        var library = NoteLibrarySnapshot(folders: [home]); library.notes = [note]; library.pages = [page]
+        try await disk.write(Data("{}".utf8), name: "d")
+        try await disk.save(library)
+        let main = root.appendingPathComponent("library.json"), sidecar = root.appendingPathComponent("library.text.json")
+        XCTAssertFalse(try String(contentsOf: main).contains("Searchable original"))
+        XCTAssertTrue(try String(contentsOf: sidecar).contains("Searchable original"))
+        let stamp = try FileManager.default.attributesOfItem(atPath: sidecar.path)[.modificationDate] as? Date
+        library.pages[0].modifiedAt = Date(timeIntervalSinceNow: 5)
+        try await disk.save(library) // library changed, text did not: sidecar is not rewritten
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: sidecar.path)[.modificationDate] as? Date, stamp)
+        let reopened = try await DiskStore(root: root).load()
+        XCTAssertEqual(reopened.pages[0].pdfText, page.pdfText); XCTAssertEqual(reopened.pages[0].ocrText, page.ocrText)
+        // Legacy file (text inline, no sidecar) still loads; a lost sidecar only costs a re-index.
+        try JSONEncoder().encode(library).write(to: main); try FileManager.default.removeItem(at: sidecar)
+        let legacy = try await DiskStore(root: root).load()
+        XCTAssertEqual(legacy.pages[0].pdfText, page.pdfText)
+        try await DiskStore(root: root).save(legacy); try FileManager.default.removeItem(at: sidecar)
+        let healed = try await DiskStore(root: root).load()
+        XCTAssertNil(healed.pages[0].pdfText)
+    }
 }

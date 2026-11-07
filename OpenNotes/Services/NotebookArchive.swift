@@ -31,16 +31,18 @@ struct NotebookArchive: Codable, Sendable {
     }
     static func validText(_ content: PageTextContent?) -> Bool {
         guard let content else { return true }
-        return content.text.count <= 5_000_000 && content.blocks.count <= 100_000 && content.blocks.allSatisfy { block in
+        return content.text.utf8.count <= 5_000_000 && // O(1); String.count walks every grapheme and dominated autosave validation
+             content.blocks.count <= 100_000 && content.blocks.allSatisfy { block in
             block.x.isFinite && block.y.isFinite && block.width.isFinite && block.height.isFinite &&
             block.width > 0 && block.height > 0 && block.width <= 20000 && block.height <= 20000 &&
             abs(block.x) <= 20000 && abs(block.y) <= 20000 &&
             (block.confidence == nil || (block.confidence!.isFinite && (0...1).contains(block.confidence!)))
         }
     }
+    private static let resourceCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_ "))   // built once: this ran per character per page
     static func safeResource(_ name: String) -> Bool {
         !name.isEmpty && name.count < 128 && name != "." && name != ".." &&
-        name.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_ ")).contains($0) }
+        name.unicodeScalars.allSatisfy { resourceCharacters.contains($0) }
     }
 }
 
@@ -115,7 +117,8 @@ actor DiskStore {
         let journal = root.appendingPathComponent("library.pending.json")
         if FileManager.default.fileExists(atPath: journal.path) {
             let data = try Data(contentsOf: journal)
-            let pending = try JSONDecoder().decode(NoteLibrarySnapshot.self, from: data)
+            var pending = try JSONDecoder().decode(NoteLibrarySnapshot.self, from: data)
+            mergeTextIndex(into: &pending)
             try validate(pending)
             for page in pending.pages {
                 guard let data = try read(page.drawingResourceID) else { throw CocoaError(.fileNoSuchFile) }
@@ -126,6 +129,7 @@ actor DiskStore {
             }
             try data.write(to: root.appendingPathComponent("library.json"), options: .atomic)
             try FileManager.default.removeItem(at: journal)
+            lastWritten = nil
             return pending
         }
         let url = root.appendingPathComponent("library.json")
@@ -133,8 +137,24 @@ actor DiskStore {
             return NoteLibrarySnapshot(folders: [NotebookFolder(id: NotebookFolder.homeID, name: "My notebooks")])
         }
         // Never replace a corrupt library with an empty one.
-        let library = try JSONDecoder().decode(NoteLibrarySnapshot.self, from: Data(contentsOf: url))
+        var library = try JSONDecoder().decode(NoteLibrarySnapshot.self, from: Data(contentsOf: url))
+        mergeTextIndex(into: &library)
         try validate(library); return library
+    }
+    // Extracted PDF text and handwriting OCR are bulky, derived and self-healing (pages without pdfText are re-indexed),
+    // so they live in a sidecar that is rewritten only when it changes, not on every autosave of library.json.
+    private struct TextIndex: Codable, Equatable { var pdf: [String: PageTextContent] = [:], ocr: [String: PageTextContent] = [:] }
+    private var textURL: URL { root.appendingPathComponent("library.text.json") }
+    private var lastText: TextIndex?
+    private func mergeTextIndex(into library: inout NoteLibrarySnapshot) {
+        // A missing or unreadable sidecar only costs a re-index; legacy library.json files still carry their own text.
+        guard let data = try? Data(contentsOf: textURL), let index = try? JSONDecoder().decode(TextIndex.self, from: data) else { return }
+        lastText = index
+        for i in library.pages.indices {
+            let key = library.pages[i].id.uuidString
+            if library.pages[i].pdfText == nil { library.pages[i].pdfText = index.pdf[key] }
+            if library.pages[i].ocrText == nil { library.pages[i].ocrText = index.ocr[key] }
+        }
     }
     func validate(_ library: NoteLibrarySnapshot) throws {
         let pagesByID = Dictionary(library.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -157,7 +177,15 @@ actor DiskStore {
         try validate(library)
         let url = root.appendingPathComponent("library.json")
         let journal = root.appendingPathComponent("library.pending.json")
-        let data = try JSONEncoder().encode(library)
+        var stripped = library, index = TextIndex()
+        for i in stripped.pages.indices {
+            let key = stripped.pages[i].id.uuidString
+            index.pdf[key] = stripped.pages[i].pdfText; index.ocr[key] = stripped.pages[i].ocrText
+            stripped.pages[i].pdfText = nil; stripped.pages[i].ocrText = nil
+        }
+        // Comparing in memory is far cheaper than re-encoding megabytes of text on every autosave.
+        if index != lastText { try JSONEncoder().encode(index).write(to: textURL, options: .atomic); lastText = index }
+        let data = try JSONEncoder().encode(stripped)
         try data.write(to: journal, options: .atomic)
         var previousResources: Set<String>?
         if let old = try? Data(contentsOf: url) {
@@ -194,8 +222,10 @@ actor DiskStore {
     }
     func restoreBackup() throws -> NoteLibrarySnapshot {
         let data = try Data(contentsOf: root.appendingPathComponent("library.backup.json"))
-        let library = try JSONDecoder().decode(NoteLibrarySnapshot.self, from: data)
+        var library = try JSONDecoder().decode(NoteLibrarySnapshot.self, from: data)
+        mergeTextIndex(into: &library)
         try validate(library)
+        lastWritten = nil
         try data.write(to: root.appendingPathComponent("library.json"), options: .atomic)
         let journal = root.appendingPathComponent("library.pending.json")
         if FileManager.default.fileExists(atPath: journal.path) { try FileManager.default.removeItem(at: journal) }
