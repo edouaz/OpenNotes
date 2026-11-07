@@ -23,6 +23,8 @@ Optional access policy (all default to the safest value):
 
 - `ALLOW_WRITE=true`: register the write tools. **Default: read-only**; write tools are not even listed to the agent.
 - `ALLOW_DESTRUCTIVE=true` (needs `ALLOW_WRITE`): register `remove_element`, `remove_ink`, `reorder_pages`, `restore_revision` and allow `trashed: true`. These carry `destructiveHint`. Unknown future tools default to "write".
+
+Production (2026-11-07, `dpl_6ZKTukFE6fTsAaNTXFcCvcFHdSv1`, then the tuple-schema fix): `ALLOW_WRITE=true`, `ALLOW_DESTRUCTIVE` unset. `mark_text` highlights, boxes or underlines a phrase on a page by locating its words with `pdftotext -bbox` on the exported page, so the agent never guesses coordinates; handwriting is not searchable.
 - `REQUIRE_OAUTH_CLIENT=true`: accept only tokens that carry a `client_id` claim (issued through the OAuth consent flow), rejecting the app's own password-login session tokens. Leave off until a real client authorization has been validated end to end, then turn it on.
 - `RATE_LIMIT_PER_MIN` (default 120 per user), `IP_RATE_LIMIT_PER_MIN` (default 600 per address, applied before the token check): HTTP 429 with `Retry-After`.
 - `MAX_BODY_MB` (default 8; Vercel itself caps bodies at 4.5 MB): larger files use the transfer tools.

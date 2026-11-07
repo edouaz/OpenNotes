@@ -209,3 +209,38 @@ export async function renderPage(archive, pageID) {
     throw new Error('Rendered page exceeds response size limit');
   } finally { await rm(dir, { recursive:true, force:true }); }
 }
+
+// Word boxes of one page in document coordinates (top-left origin), via Poppler on the exported page.
+export async function pageWords(archive, pageID) {
+  const pdf = await exportPDF(archive, pageID), dir = await mkdtemp(join(tmpdir(), 'opennotes-words-'));
+  try {
+    await writeFile(join(dir, 'page.pdf'), pdf);
+    const { stdout } = await exec('pdftotext', ['-bbox', '-f', '1', '-l', '1', join(dir, 'page.pdf'), '-'], { timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
+    const unescape = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+    return [...stdout.matchAll(/<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)<\/word>/g)]
+      .map(m => ({ x0: +m[1], y0: +m[2], x1: +m[3], y1: +m[4], text: unescape(m[5]) }));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+// One rectangle per line for every occurrence of `query` (case/accents/punctuation-insensitive word match).
+export function matchRects(words, query, maxMatches = 50) {
+  const norm = s => s.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const terms = query.split(/\s+/).map(norm).filter(Boolean), keys = words.map(w => norm(w.text));
+  if (!terms.length) throw new Error('Empty query');
+  const matches = [];
+  for (let i = 0; i + terms.length <= words.length && matches.length < maxMatches; i++) {
+    // Phrase edges may be glued to punctuation or split words ("…light," / "high-"); inner words must match exactly.
+    const last = terms.length - 1;
+    const hit = (t, k) => last === 0 ? keys[i].includes(t) : k === 0 ? keys[i].endsWith(t) : k === last ? keys[i + k].startsWith(t) : keys[i + k] === t;
+    if (!terms.every(hit)) continue;
+    const lines = [];
+    for (const w of words.slice(i, i + terms.length)) {
+      const line = lines.find(l => Math.abs(l.y0 - w.y0) < (w.y1 - w.y0) / 2);
+      if (line) Object.assign(line, { x0: Math.min(line.x0, w.x0), x1: Math.max(line.x1, w.x1), y0: Math.min(line.y0, w.y0), y1: Math.max(line.y1, w.y1) });
+      else lines.push({ ...w });
+    }
+    matches.push(lines.map(({ x0, y0, x1, y1 }) => ({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 })));
+    i += terms.length - 1;
+  }
+  return matches;
+}

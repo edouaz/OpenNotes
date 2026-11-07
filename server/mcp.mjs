@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { editNotebook, swiftNow } from './archive.mjs';
 import { createNotebook, addBlankPage, addElement, searchArchive, importPDF, addImage, addInk, editPage, reorderPages, updateElement, removeInk } from './operations.mjs';
 import { NotebookRepository } from './repository.mjs';
-import { exportPDF, renderPage } from './render.mjs';
+import { exportPDF, renderPage, pageWords, matchRects } from './render.mjs';
 import { toolAllowed, toolMode } from './policy.mjs';
 const uuid = z.string().uuid();
 const response = value => { const text = JSON.stringify(value); if (Buffer.byteLength(JSON.stringify(text)) > 3 * 1024 * 1024) throw new Error('Response too large; use download_notebook or download_pdf when applicable'); return { content: [{ type: 'text', text }] }; };
@@ -94,6 +94,24 @@ export function createServer(client, userID, policy = {}) {
     const edited = addElement(archive, pageID, element);
     return { elementID: edited.pages.find(page => page.id.toLowerCase() === pageID.toLowerCase()).elements.at(-1).id, revisionID: await repository.commit(edited, revisionID) };
   });
+  tool('mark_text', 'Highlight, box or underline every occurrence of a phrase on a page (PDF text or typed text) without guessing coordinates. Handwriting is not searchable. Returns the created element IDs; call get_page_text first to pick an exact phrase.', {
+    notebookID: uuid, pageID: uuid, expectedRevision: uuid, query: z.string().trim().min(1).max(500), style: z.enum(['highlight', 'box', 'underline']).default('highlight'),
+    colorHex: z.string().regex(/^#[0-9a-f]{6}$/i).optional(), occurrence: z.number().int().min(1).optional().describe('Only mark the Nth occurrence; all occurrences when omitted'),
+  }, async ({ notebookID, pageID, expectedRevision, query, style, colorHex, occurrence }) => {
+    const { archive, revisionID } = await repository.read(notebookID);
+    if (revisionID !== expectedRevision) throw new Error('Notebook revision conflict');
+    let matches = matchRects(await pageWords(archive, pageID), query);
+    if (occurrence) matches = matches.slice(occurrence - 1, occurrence);
+    if (!matches.length) throw new Error('Text not found on this page');
+    const pad = 2, rects = matches.flat().map(r => ({ x: Math.max(0, r.x - pad), y: Math.max(0, r.y - pad), width: r.width + 2 * pad, height: r.height + 2 * pad }));
+    const element = r => style === 'highlight' ? { kind: 'highlight', ...r, fillColorHex: colorHex ?? '#FFE600' }
+      : style === 'box' ? { kind: 'rectangle', ...r, strokeColorHex: colorHex ?? '#E5484D', strokeWidth: 2 }
+      : { kind: 'line', x: r.x, y: r.y + r.height, width: r.width, height: 0.5, strokeColorHex: colorHex ?? '#E5484D', strokeWidth: 2 };
+    // ponytail: one box per line; a multi-line phrase boxed as several rectangles, not one outline
+    let edited = archive; const elementIDs = [];
+    for (const r of rects) { edited = addElement(edited, pageID, element(r)); elementIDs.push(edited.pages.find(p => p.id.toLowerCase() === pageID.toLowerCase()).elements.at(-1).id); }
+    return { matches: matches.length, elementIDs, revisionID: await repository.commit(edited, revisionID) };
+  });
   const transferPath = notebookID => `${userID.toLowerCase()}/${notebookID.toLowerCase()}/${randomUUID()}.bin`;
   const storage = () => client.storage.from('mcp-transfers');
   const downloadTransfer = async (notebookID, path) => {
@@ -146,7 +164,7 @@ export function createServer(client, userID, policy = {}) {
     const edited = await addImage(archive, pageID, Buffer.from(imageBase64, 'base64'), rect);
     return { revisionID: await repository.commit(edited, revisionID) };
   });
-  tool('add_ink', 'Draw a solid stroke through page-coordinate points.', { notebookID: uuid, expectedRevision: uuid, pageID: uuid, points: z.array(z.tuple([z.number(),z.number()])).min(1).max(10000), width: z.number().min(.1).max(128), rgba: z.tuple([z.number().min(0).max(1),z.number().min(0).max(1),z.number().min(0).max(1),z.number().min(0).max(1)]), inkType: z.enum(['pen','monoline','fountainPen','marker','pencil']).default('pen') }, async ({ notebookID, expectedRevision, pageID, points, width, rgba, inkType }) => {
+  tool('add_ink', 'Draw a solid stroke through page-coordinate points.', { notebookID: uuid, expectedRevision: uuid, pageID: uuid, points: z.array(z.array(z.number()).length(2)).min(1).max(10000).describe('[[x, y], ...] in page coordinates'), width: z.number().min(.1).max(128), rgba: z.array(z.number().min(0).max(1)).length(4).describe('[red, green, blue, alpha], each 0–1'), inkType: z.enum(['pen','monoline','fountainPen','marker','pencil']).default('pen') }, async ({ notebookID, expectedRevision, pageID, points, width, rgba, inkType }) => {
     const { archive, revisionID } = await repository.read(notebookID);
     if (revisionID !== expectedRevision) throw new Error('Notebook revision conflict');
     return { revisionID: await repository.commit(addInk(archive, pageID, points, width, rgba, inkType), revisionID) };

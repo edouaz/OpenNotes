@@ -121,3 +121,14 @@ test('light read tools: outline, selected page text and resource-free notebook r
     assert.ok(firstPage);
   } finally { await client.close(); await server.close(); }
 });
+
+test('every tool schema is accepted by ChatGPT (no tuple items)', async () => {
+  // ChatGPT drops the whole connector when one tool uses `items: [...]` / `prefixItems`.
+  const server = createServer({}, 'a1dfd123-1234-4abc-8def-0123456789ab', ALL), client = new Client({ name: 'test', version: '1.0.0' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(b), client.connect(a)]);
+  const bad = [], walk = (s, path) => { if (!s || typeof s !== 'object') return; if (Array.isArray(s.items) || s.prefixItems) bad.push(path); for (const [k, v] of Object.entries(s)) walk(v, `${path}.${k}`); };
+  for (const tool of (await client.listTools()).tools) walk(tool.inputSchema, tool.name);
+  assert.deepEqual(bad, []);
+  await client.close(); await server.close();
+});
