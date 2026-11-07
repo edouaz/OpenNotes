@@ -57,6 +57,24 @@ struct StickyInkOcclusion {
         return mask
     }
 
+    /// Same rule as `EditorSession.attachingInk`: the topmost open, unlocked note under the first sample owns the stroke.
+    func previewMask(startingAt point: CGPoint, in rect: CGRect) -> CAShapeLayer? {
+        guard !notes.isEmpty else { return nil }
+        let parent = notes.lastIndex { note in
+            guard let element = elementsByID[note.id], element.collapsed != true, element.isLocked != true else { return false }
+            return note.path.contains(point)
+        }
+        var remaining = parent.map { notes[$0].path } ?? CGPath(rect: rect, transform: nil)
+        for note in notes.dropFirst(parent.map { $0 + 1 } ?? 0) where note.bounds.intersects(remaining.boundingBoxOfPath) {
+            remaining = remaining.subtracting(note.path)
+        }
+        let mask = CAShapeLayer()
+        mask.frame = rect
+        mask.path = remaining
+        mask.fillColor = UIColor.black.cgColor
+        return mask
+    }
+
     func visible(_ stroke: InkStroke) -> InkStroke? {
         let parents = ancestors(stroke), covers = covers(stroke, ancestors: parents)
         guard !parents.isEmpty || !covers.isEmpty else { return stroke }

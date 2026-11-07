@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import Vision
@@ -11,12 +12,14 @@ final class EditorSession: ObservableObject {
     @Published var dirty = false
     @Published var busy = false
     @Published var stickyInsertionColor: String?
+    /// Objects of the current lasso or tap selection; nil when there is none (see `selectionSnapshot`).
+    var selectionIDs: SelectionIdentity?
     @discardableResult func insertSticky(at point: CGPoint, color override: String? = nil) async -> Bool {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard !isReadOnly, let color = override ?? stickyInsertionColor, let page, point.x.isFinite, point.y.isFinite else { return false }
         var note = PageElement(kind: .stickyNote)
         note.text = ""; note.fillColorHex = color
-        if toolSettings.stickyCard == true { note.stickyCornerRadius = 16; note.stickyShadow = 0.06; note.strokeWidth = 1; note.strokeColorHex = "#808080" }
+        if toolSettings.stickyCard == true { note.applyCardStyle() }
         let size = PageRenderer.size(page)
         note.width = min(220, size.width); note.height = min(180, size.height)
         note.x = min(max(0, point.x), size.width - note.width)
@@ -162,6 +165,10 @@ final class EditorSession: ObservableObject {
     }
     let store: LibraryStore
     let noteID: UUID
+    /// This notebook's slice of the library, so the editor need not observe the whole `LibraryStore`.
+    @Published private(set) var pages: [NotePage] = []
+    @Published private(set) var title = "Notebook"
+    @Published private(set) var storeError: String?
     var artwork: PageArtwork?
     var backgroundData: Data?
     var resources: [String: Data] = [:]
@@ -216,6 +223,9 @@ final class EditorSession: ObservableObject {
         restoreInstrument()
         if let index = toolSettings.selectedStrokePresets?[selectedTool.rawValue] { selectStrokePreset(index) }
         canvas.tool = tool
+        store.$library.map { $0.pages(in: noteID) }.removeDuplicates().assign(to: &$pages)
+        store.$library.map { $0.note(id: noteID)?.title ?? "Notebook" }.removeDuplicates().assign(to: &$title)
+        store.$error.removeDuplicates().assign(to: &$storeError)
         store.register(self)
     }
     @Published var cloudInstalling = false
@@ -369,9 +379,10 @@ final class EditorSession: ObservableObject {
         store.updatePage(updated)
         await open(updated.id)
     }
-    @discardableResult func apply(_ action: DocumentAction) async -> Bool {
+    /// `durable: false` (direct manipulation): show the edit at once and let the autosave write it, like ink and lasso moves.
+    @discardableResult func apply(_ action: DocumentAction, durable: Bool = true) async -> Bool {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
-        guard !isReadOnly, action.pageID == page?.id, await flush() else { return false }
+        guard !isReadOnly, action.pageID == page?.id, await prepareEdit(durable: durable) else { return false }
         do {
             guard let current = page else { return false }
             if action.kind == .setBookmark {
@@ -391,7 +402,7 @@ final class EditorSession: ObservableObject {
             error = nil
             replaceContent(drawing, elements: updated.elements ?? [], actionName: "Edit elements", attachObjects: true)
             guard error == nil else { return false }
-            return await flush()
+            return durable ? await flush() : true
         } catch { Diagnostics.shared.failure("editor.failure", error: error); self.error = error.localizedDescription; return false }
     }
     func replaceContent(_ drawing: InkDrawing, elements: [PageElement], actionName: String, attachObjects: Bool = false) {

@@ -5,6 +5,7 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
     private var handles: [UIView] = []
     private let outline = CAShapeLayer()
     let deleteButton = UIButton(type: .system)
+    private let deleteBadge = UIView()
     var item: PageElement
     var zoom: CGFloat = 1
     var pageSize = CGSize.zero
@@ -43,9 +44,13 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
             handle.addGestureRecognizer(pan)
             handles.append(handle); addSubview(handle)
         }
-        deleteButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        deleteBadge.backgroundColor = UIColor.white.withAlphaComponent(0.95)
+        deleteBadge.layer.cornerRadius = 11; deleteBadge.isUserInteractionEnabled = false
+        deleteBadge.layer.shadowColor = UIColor.black.cgColor; deleteBadge.layer.shadowOpacity = 0.2; deleteBadge.layer.shadowRadius = 2; deleteBadge.layer.shadowOffset = CGSize(width: 0, height: 1)
+        deleteButton.addSubview(deleteBadge)
+        deleteButton.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .heavy)), for: .normal)
         deleteButton.tintColor = .systemRed
-        deleteButton.backgroundColor = .systemBackground; deleteButton.layer.cornerRadius = 22
+        if let image = deleteButton.imageView { deleteButton.bringSubviewToFront(image) }
         deleteButton.accessibilityLabel = "Delete image"
         deleteButton.accessibilityIdentifier = "image.delete"
         deleteButton.addTarget(self, action: #selector(deleteImage), for: .touchUpInside)
@@ -93,18 +98,20 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
                            CGPoint(x: 0, y: bounds.midY), CGPoint(x: bounds.width, y: bounds.midY), CGPoint(x: bounds.midX, y: 0), CGPoint(x: bounds.midX, y: bounds.height)]
             handle.frame = CGRect(x: centers[corner].x - 22, y: centers[corner].y - 22, width: 44, height: 44)
         }
-        var origin = CGPoint(x: -44, y: -44)
+        // Diagonally outside the top-left corner, clear of every handle; the top-right corner when the viewport clips it.
+        let clear = { (origin: CGPoint) in !self.handles.contains { $0.frame.intersects(CGRect(origin: origin, size: CGSize(width: 44, height: 44))) } }
+        var origin = CGPoint(x: -54, y: -54)
         if let superview {
             let viewport = convert(superview.bounds, from: superview)
-            origin.x = max(origin.x, viewport.minX)
-            origin.y = max(origin.y, viewport.minY)
-            if CGRect(origin: origin, size: CGSize(width: 44, height: 44)).intersects(handles[0].frame) {
-                origin.x = 22
+            func clamped(_ point: CGPoint) -> CGPoint {
+                CGPoint(x: min(max(point.x, viewport.minX), viewport.maxX - 44), y: min(max(point.y, viewport.minY), viewport.maxY - 44))
             }
-            origin.x = min(origin.x, viewport.maxX - 44)
-            origin.y = min(origin.y, viewport.maxY - 44)
+            origin = clamped(origin)
+            if !clear(origin) { origin = clamped(CGPoint(x: bounds.width + 10, y: -54)) }
+            if !clear(origin) { origin = clamped(CGPoint(x: 24, y: 24)) }   // pinned to the viewport edge: just inside, under the handles
         }
         deleteButton.frame = CGRect(origin: origin, size: CGSize(width: 44, height: 44))
+        deleteBadge.frame = CGRect(x: 11, y: 11, width: 22, height: 22)
     }
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
@@ -119,14 +126,15 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
     @objc private func dragImage(_ gesture: UIPanGestureRecognizer) {
         guard editsDirectly else { if gesture.state == .began { selected?() }; return }
         guard item.isLocked != true else { return }
-        if gesture.state == .began { initial = frame; selectImage(); Diagnostics.shared.record("image.drag.begin", ["image": item.id.uuidString]) }
+        if gesture.state == .began { initial = unrotatedFrame; selectImage(); FrameMonitor.shared.begin("image.drag"); Diagnostics.shared.record("image.drag.begin", ["image": item.id.uuidString]) }
         let point = gesture.location(in: superview)
         let delta = CGPoint(x: point.x - dragStart.x, y: point.y - dragStart.y)
-        frame.origin = CGPoint(x: initial.minX + delta.x, y: initial.minY + delta.y)
+        center = CGPoint(x: initial.midX + delta.x, y: initial.midY + delta.y)
+        if gesture.state == .ended || gesture.state == .cancelled { FrameMonitor.shared.end() }
         if gesture.state == .ended {
             Diagnostics.shared.record("image.drag.end", ["dx": String(Double(delta.x)), "dy": String(Double(delta.y)), "zoom": String(Double(zoom))])
             moveImage(by: CGPoint(x: delta.x / zoom, y: delta.y / zoom))
-        } else if gesture.state == .cancelled { frame = initial; Diagnostics.shared.record("image.drag.cancel") }
+        } else if gesture.state == .cancelled { place(initial); Diagnostics.shared.record("image.drag.cancel") }
     }
     func moveImage(by delta: CGPoint) {
         guard item.isLocked != true, delta.x.isFinite, delta.y.isFinite else { return }
@@ -164,7 +172,8 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
     }
     @objc private func scale(_ gesture: UIPanGestureRecognizer) {
         guard item.isLocked != true, let corner = gesture.view?.tag else { return }
-        if gesture.state == .began { initial = frame; selectImage() }
+        if gesture.state == .began { initial = unrotatedFrame; selectImage(); FrameMonitor.shared.begin("image.resize") }
+        if gesture.state == .ended || gesture.state == .cancelled { FrameMonitor.shared.end(["corner": String(corner)]) }
         let point = gesture.location(in: superview)
         let delta = CGPoint(x: point.x - dragStart.x, y: point.y - dragStart.y)
         if corner >= 4 {
@@ -175,16 +184,22 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
             case 6: preview.origin.y += delta.y; preview.size.height -= delta.y
             default: preview.size.height += delta.y
             }
-            if preview.width >= 44 && preview.height >= 44 { frame = preview }
+            if preview.width >= 44 && preview.height >= 44 { place(preview) }
             if gesture.state == .ended { resizeSide(corner, by: (corner < 6 ? delta.x : delta.y) / zoom) }
-            else if gesture.state == .cancelled { frame = initial }
+            else if gesture.state == .cancelled { place(initial) }
             return
         }
         let dx = corner % 2 == 0 ? -delta.x : delta.x, dy = corner < 2 ? -delta.y : delta.y
         let factor = max(0.01, 1 + (dx * initial.width + dy * initial.height) / max(1, initial.width * initial.width + initial.height * initial.height))
         let size = CGSize(width: initial.width * factor, height: initial.height * factor)
-        frame = CGRect(x: corner % 2 == 0 ? initial.maxX - size.width : initial.minX, y: corner < 2 ? initial.maxY - size.height : initial.minY, width: size.width, height: size.height)
+        place(CGRect(x: corner % 2 == 0 ? initial.maxX - size.width : initial.minX, y: corner < 2 ? initial.maxY - size.height : initial.minY, width: size.width, height: size.height))
         if gesture.state == .ended { resizeImage(by: factor, corner: corner) }
-        else if gesture.state == .cancelled { frame = initial }
+        else if gesture.state == .cancelled { place(initial) }
+    }
+    private var unrotatedFrame: CGRect { CGRect(x: center.x - bounds.width / 2, y: center.y - bounds.height / 2, width: bounds.width, height: bounds.height) }
+    private func place(_ rect: CGRect) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        bounds.size = rect.size; center = CGPoint(x: rect.midX, y: rect.midY)
+        CATransaction.commit()
     }
 }

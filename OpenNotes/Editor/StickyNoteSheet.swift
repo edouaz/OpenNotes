@@ -26,13 +26,7 @@ struct StickyNoteSheet: View {
                         } label: {
                             Label("Paper", systemImage: isPaper ? "checkmark.circle.fill" : "circle")
                         }.accessibilityAddTraits(isPaper ? .isSelected : [])
-                        Button {
-                            note.stickyCornerRadius = 16
-                            note.stickyShadow = 0.06
-                            note.strokeWidth = 1
-                            note.strokeColorHex = "#808080"
-                            borderColor = Color(UIColor(presetHex: "#808080") ?? .gray)
-                        } label: {
+                        Button { note.applyCardStyle() } label: {
                             Label("Card", systemImage: isCard ? "checkmark.circle.fill" : "circle")
                         }.accessibilityAddTraits(isCard ? .isSelected : [])
                     }
@@ -131,9 +125,7 @@ struct StickyNoteSheet: View {
         note.stickyRadius == 0 && note.stickyShadowOpacity == 0.12 && note.stickyBorderWidth == 0
     }
 
-    private var isCard: Bool {
-        note.stickyRadius == 16 && note.stickyShadowOpacity == 0.06 && note.stickyBorderWidth == 1 && note.strokeColorHex?.uppercased() == "#808080"
-    }
+    private var isCard: Bool { note.isCardStyle }
 
     private var preview: some View {
         let scale = note.collapsed == true ? 1 : min(150 / max(1, note.width), 90 / max(1, note.height))
@@ -163,5 +155,15 @@ struct StickyNoteSheet: View {
         .frame(minHeight: 160)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Sticky note appearance preview")
+    }
+}
+
+extension PageElement {
+    /// Card: rounded and softly lifted off the page, without an outline (borders stay a per-note choice).
+    mutating func applyCardStyle() { stickyCornerRadius = 14; stickyShadow = 0.16; strokeWidth = nil }
+    var isCardStyle: Bool {
+        (stickyRadius == 14 && stickyShadowOpacity == 0.16 && stickyBorderWidth == 0) ||
+        // Cards made by earlier builds carried a grey 1 pt outline.
+        (stickyRadius == 16 && stickyShadowOpacity == 0.06 && stickyBorderWidth == 1 && strokeColorHex?.uppercased() == "#808080")
     }
 }

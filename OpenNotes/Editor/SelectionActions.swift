@@ -20,11 +20,11 @@ extension EditorSession {
     func selectionAction(_ action: PageSelectionAction, path: UIBezierPath) async {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard !isReadOnly, await flush(), let page else { return }
-        let snapshot = SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
+        let snapshot = selectionSnapshot(page, path: path)
         guard !snapshot.isEmpty else { return }
         do {
             if action == .copySelection || action == .cutSelection || action == .duplicateSelection {
-                let payload = try DocumentClipboard.payload(page: page, drawing: canvas.drawing, path: path, settings: toolSettings, resources: resources)
+                let payload = try DocumentClipboard.payload(snapshot, resources: resources)
                 let data = try DocumentClipboard.encode(payload)
                 if action == .duplicateSelection {
                     let (ink, elements, assets) = try DocumentClipboard.decode(data, on: page, at: CGPoint(x: snapshot.bounds.minX + 20, y: snapshot.bounds.minY + 20))
@@ -97,7 +97,7 @@ extension EditorSession {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         let end = Perf.begin("lasso.affine"); defer { end() }
         guard !isReadOnly, scale.isFinite, rotation.isFinite, (0.1...10).contains(scale), await prepareEdit(durable: durable), let page else { return false }
-        let snapshot = SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
+        let snapshot = selectionSnapshot(page, path: path)
         guard !snapshot.isEmpty, !snapshot.containsLockedObjects else { return false }
         let sy = scaleY ?? scale
         guard sy.isFinite, (0.1...10).contains(sy) else { return false }

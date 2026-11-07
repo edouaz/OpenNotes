@@ -172,6 +172,53 @@ final class EraserGeometryTests: XCTestCase {
         let current = try await disk.read("old.drawing")
         XCTAssertEqual(current, latest)
     }
+    // The distance test must agree with the CGPath boolean it replaces, up to a small tolerance band.
+    func testProximityHitTestBracketsPathIntersection() {
+        var seed: UInt64 = 7
+        func rnd(_ range: ClosedRange<CGFloat>) -> CGFloat { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return range.lowerBound + CGFloat(seed >> 33) / CGFloat(1 << 31) * (range.upperBound - range.lowerBound) }
+        let tolerance: CGFloat = 0.5
+        for _ in 0..<150 {
+            let stroke = PerformanceTests.stroke(samples: 12, origin: CGPoint(x: rnd(0...80), y: rnd(0...80)), seed: Int(rnd(1...1000)), step: rnd(2...8), width: rnd(1...12))
+            let sweep = (0..<Int(rnd(1...4))).map { _ in CGPoint(x: rnd(0...120), y: rnd(0...120)) }
+            let reach = rnd(1...15)
+            let sweepPath = CGMutablePath(); sweepPath.move(to: sweep[0]); sweep.dropFirst().forEach { sweepPath.addLine(to: $0) }
+            let area: CGPath = sweep.count == 1 ? CGPath(ellipseIn: CGRect(x: sweep[0].x - reach, y: sweep[0].y - reach, width: reach * 2, height: reach * 2), transform: nil)
+                : sweepPath.copy(strokingWithWidth: reach * 2, lineCap: .round, lineJoin: .round, miterLimit: 1)
+            let exact = stroke.paintedPath.intersects(area)
+            if EraserEditing.touches(stroke, along: sweep, reach: reach - tolerance) { XCTAssertTrue(exact) }
+            if exact { XCTAssertTrue(EraserEditing.touches(stroke, along: sweep, reach: reach + tolerance)) }
+        }
+    }
+    // Local subtraction must paint the same pixels as subtracting from the whole outline.
+    func testLocalPrecisionSubtractionMatchesFullBoolean() {
+        let stroke = PerformanceTests.stroke(samples: 400, origin: CGPoint(x: 20, y: 60), seed: 3, step: 1, width: 6)
+        let area = CGPath(ellipseIn: CGRect(x: 150, y: 40, width: 24, height: 60), transform: nil)
+        let local = EraserEditing.paint(of: stroke, subtracting: area), full = stroke.paintedPath.subtracting(area)
+        var mismatches = 0, checked = 0
+        for x in stride(from: CGFloat(0), to: 450, by: 1.7) { for y in stride(from: CGFloat(0), to: 130, by: 1.7) {
+            let point = CGPoint(x: x, y: y); checked += 1
+            if local.contains(point) != full.contains(point) { mismatches += 1 }
+        } }
+        XCTAssertLessThan(mismatches, checked / 500, "\(mismatches)/\(checked)")
+        XCTAssertFalse(local.contains(CGPoint(x: 162, y: 70)))
+    }
+    // Lasso containment: the distance test brackets the CGPath intersection it replaces (and agrees on clear cases).
+    func testLassoProximityBracketsPathIntersection() {
+        var seed: UInt64 = 11
+        func rnd(_ range: ClosedRange<CGFloat>) -> CGFloat { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return range.lowerBound + CGFloat(seed >> 33) / CGFloat(1 << 31) * (range.upperBound - range.lowerBound) }
+        for _ in 0..<150 {
+            let stroke = PerformanceTests.stroke(samples: 12, origin: CGPoint(x: rnd(0...80), y: rnd(0...80)), seed: Int(rnd(1...1000)), step: rnd(2...8), width: rnd(1...12))
+            let lasso = UIBezierPath(); lasso.move(to: CGPoint(x: rnd(0...120), y: rnd(0...120)))
+            for _ in 0..<Int(rnd(2...6)) { lasso.addLine(to: CGPoint(x: rnd(0...120), y: rnd(0...120))) }
+            lasso.close()
+            let edges = DocumentClipboard.edges(of: lasso.cgPath)
+            func near(_ reach: CGFloat) -> Bool { EraserEditing.touches(stroke, segments: edges, reach: reach) { lasso.cgPath.contains($0, using: .winding) } }
+            let exact = stroke.paintedPath.intersects(lasso.cgPath, using: .winding)
+            if near(-0.5) { XCTAssertTrue(exact) }
+            if exact { XCTAssertTrue(near(0.5)) }
+            XCTAssertEqual(DocumentClipboard.contains(stroke, inside: lasso), near(0))
+        }
+    }
     func testSpatialIndexAndInvalidInput() throws {
         let stroke = line()
         let drawing = InkDrawing(strokes: [stroke])

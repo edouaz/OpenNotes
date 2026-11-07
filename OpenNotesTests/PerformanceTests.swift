@@ -82,6 +82,48 @@ final class PerformanceTests: XCTestCase {
         }
     }
 
+    // A real lasso has hundreds of edges and pages have notes: a rectangle alone hides most of the snapshot cost.
+    func testLassoSnapshotWithFreeformEdgesAndNotes() {
+        let drawing = Self.handwriting()
+        let page = page()
+        let settings = EditorToolSettings()
+        for edges in [100, 400, 1_200] {
+            let lasso = UIBezierPath()
+            for index in 0..<edges {
+                let angle = CGFloat(index) / CGFloat(edges) * 2 * .pi, wobble = 1 + 0.08 * sin(angle * 9)
+                let point = CGPoint(x: 397 + cos(angle) * 380 * wobble, y: 300 + sin(angle) * 280 * wobble)
+                if index == 0 { lasso.move(to: point) } else { lasso.addLine(to: point) }
+            }
+            lasso.close()
+            bench("lasso.snapshot.freeform\(edges)edges.dense300strokes") {
+                XCTAssertFalse(SelectionMoveSnapshot(page: page, drawing: drawing, path: lasso, settings: settings).strokeIndices.isEmpty)
+            }
+        }
+        var noted = page
+        noted.elements = (0..<5).map { PageElement(kind: .stickyNote, x: 40 + Double($0) * 140, y: 100 + Double($0) * 120, width: 180, height: 160) }
+        let everything = UIBezierPath(rect: CGRect(origin: .zero, size: Self.pageSize))
+        bench("lasso.snapshot.5notes.dense300strokes", runs: 3) { _ = SelectionMoveSnapshot(page: noted, drawing: drawing, path: everything, settings: settings) }
+        let inner = UIBezierPath(rect: CGRect(x: 60, y: 60, width: 200, height: 100))
+        bench("lasso.snapshot.5notes.smallLasso.dense300strokes", runs: 3) { _ = SelectionMoveSnapshot(page: noted, drawing: drawing, path: inner, settings: settings) }
+    }
+    func testPickupPreviews() {
+        let drawing = Self.handwriting()
+        let viewport = CGRect(x: 0, y: 0, width: 1194, height: 834)
+        var noted = page()
+        let note = PageElement(kind: .stickyNote, x: 100, y: 100, width: 300, height: 300)
+        noted.elements = [note]
+        let artwork = PageArtwork(page: noted, data: nil, resources: [:])
+        let lasso = SelectionMoveSnapshot(page: page(), drawing: drawing, path: UIBezierPath(rect: CGRect(x: 40, y: 50, width: 300, height: 200)), settings: EditorToolSettings())
+        bench("lasso.pickup.dense300strokes", runs: 3) {
+            _ = SelectionDragPreview(frame: viewport, page: page(), artwork: artwork, drawing: drawing, snapshot: lasso, zoom: 1, offset: .zero)
+        }
+        var settings = EditorToolSettings(); settings.includeHandwriting = false
+        let sticky = SelectionMoveSnapshot(page: noted, drawing: drawing, path: UIBezierPath(rect: note.visibleBounds), settings: settings)
+        bench("sticky.pickup.dense300strokes", runs: 3) {
+            _ = SelectionDragPreview(frame: viewport, page: noted, artwork: artwork, drawing: drawing, snapshot: sticky, zoom: 1, offset: .zero)
+        }
+    }
+
     // MARK: persistence
     func testDrawingEncodeDecode() throws {
         let drawing = Self.handwriting()
@@ -107,8 +149,9 @@ final class PerformanceTests: XCTestCase {
             home.noteIDs.append(note.id); library.notes.append(note)
         }
         library.folders = [home]
+        try await store.save(library) // first save also writes the text sidecar; time the steady state after it
         let start = ContinuousClock.now
-        for _ in 0..<5 { try await store.save(library) }
+        for i in 0..<5 { library.pages[0].modifiedAt = Date(timeIntervalSinceNow: Double(i + 1)); try await store.save(library) }
         let ms = Self.ms(ContinuousClock.now - start) / 5
         print(String(format: "PERF disk.save.20pdfs1000pages median~%.2f ms (library.json %d bytes)", ms, (try? Data(contentsOf: root.appendingPathComponent("library.json")).count) ?? 0))
     }

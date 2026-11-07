@@ -38,7 +38,8 @@ struct EditorScreen: View {
     @State private var deletePageID: UUID?
     @State private var first = 1
     @State private var last = 1
-    @ObservedObject var store: LibraryStore
+    // Not observed: the session publishes this notebook's pages, title and store errors.
+    let store: LibraryStore
     let noteID: UUID
     var returnToLibrary: (() -> Void)?
     @State private var renameShown = false
@@ -48,7 +49,7 @@ struct EditorScreen: View {
         self.store = store; self.noteID = noteID
         _session = StateObject(wrappedValue: session ?? EditorSession(store: store, noteID: noteID))
     }
-    var pages: [NotePage] { store.library.pages(in: noteID) }
+    var pages: [NotePage] { session.pages }
     private var documentEditorPresented: Bool {
         stickyNote != nil || textElement != nil || shapeElement != nil || paperShown || elementsShown || annotationsShown || renameShown
     }
@@ -62,14 +63,8 @@ struct EditorScreen: View {
                 if !session.isReadOnly {
                     WritingInstrumentBar(session: session, sticky: insertSticky)
                 }
-                if selecting || editingImages { modeBanner }
-                if session.stickyInsertionColor != nil {
-                    HStack {
-                        Label("Tap the page to place a sticky note", systemImage: "note.text").font(.subheadline)
-                        Spacer()
-                        Button("Cancel") { session.stickyInsertionColor = nil }.frame(minHeight: 44)
-                    }.padding(.horizontal, 16).background(OpenNotesStyle.accent.opacity(0.08))
-                }
+                // Image placement and post-it placement need no banner: tapping the page ends or places them.
+                if selecting { modeBanner }
                 HStack(spacing: 0) {
                     if pagesShown && geometry.size.width >= 700 {
                         pagePanel(closeOnSelection: false)
@@ -155,14 +150,15 @@ struct EditorScreen: View {
                 share = nil
             }
         }
-        .alert("OpenNotes", isPresented: Binding(get: { session.error != nil || store.error != nil }, set: { if !$0 { session.error = nil; store.error = nil } })) {
+        .alert("OpenNotes", isPresented: Binding(get: { session.error != nil || session.storeError != nil }, set: { if !$0 { session.error = nil; store.error = nil } })) {
             Button("Retry saving") { store.persist(); Task { await session.flush() } }
             Button("Close", role: .cancel) { session.error = nil; store.error = nil }
-        } message: { Text(session.error ?? store.error ?? "") }
+        } message: { Text(session.error ?? session.storeError ?? "") }
     }
     private func insertSticky() {
         guard !session.isReadOnly else { return }
         finishMode(); session.stickyInsertionColor = session.toolSettings.stickyColorHex ?? "#FFE66D"
+        UIAccessibility.post(notification: .announcement, argument: "Tap the page to place a sticky note")
     }
     private func capturePage(copy: Bool = false) {
         guard let page = session.pageIncludingDrafts else { return }
@@ -225,7 +221,7 @@ struct EditorScreen: View {
                 }
             } label: { Label(session.isReadOnly ? "Enable editing" : "Read only", systemImage: session.isReadOnly ? "lock.fill" : "pencil.line") }
                 .accessibilityIdentifier("editor.readOnly").accessibilityAddTraits(session.isReadOnly ? .isSelected : [])
-            Text(store.library.note(id: noteID)?.title ?? "Notebook")
+            Text(session.title)
                 .font(.headline).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
             Button { Task { await quickAddPage() } } label: {
                 Label("Add page", systemImage: "doc.badge.plus")
@@ -427,7 +423,7 @@ struct EditorScreen: View {
         NavigationStack {
             Form {
                 if exporting { ProgressView("Export in progress…") }
-                if let message = session.error ?? store.error {
+                if let message = session.error ?? session.storeError {
                     Text(message).foregroundStyle(.red).accessibilityIdentifier("editor.exportError")
                 }
                 Stepper("From page \(first)", value: $first, in: 1...max(1, pages.count))
@@ -480,7 +476,7 @@ struct PageThumbnail: View {
             .aspectRatio(PageRenderer.size(page), contentMode: .fit)
             .background(.white).clipShape(RoundedRectangle(cornerRadius: 4))
             .shadow(color: .black.opacity(0.12), radius: 3, y: 2)
-            .task(id: try? JSONEncoder().encode(page)) {
+            .task(id: page) {
                 do { image = try await disk.thumbnail(page, pixels: 640) }
                 catch { image = nil }
             }

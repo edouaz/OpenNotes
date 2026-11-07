@@ -2,6 +2,24 @@ import XCTest
 
 @MainActor
 final class NativeInkInteractionUITests: XCTestCase {
+    func testFingerModeLassoSelects() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-fingerDrawing", "YES", "-inkTool", "pen", "-openNotebooks", "()", "-activeNotebook", ""]
+        app.launch()
+        defer { app.terminate() }
+        if app.buttons["workspace.library"].waitForExistence(timeout: 3) { app.buttons["workspace.library"].tap() }
+        XCTAssertTrue(app.buttons["library.create"].waitForExistence(timeout: 10))
+        app.buttons["library.create"].tap(); XCTAssertTrue(app.buttons["library.new.confirm"].waitForExistence(timeout: 5)); app.buttons["library.new.confirm"].tap()
+        let canvas = app.scrollViews["editor.canvas"]
+        XCTAssertTrue(canvas.waitForExistence(timeout: 10))
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.3)).press(forDuration: 0.05, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)))
+        let lasso = app.buttons["editor.tool.lasso"]
+        XCTAssertTrue(lasso.waitForExistence(timeout: 5)); lasso.tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.2)).press(forDuration: 0.05, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)))
+        let menu = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Take Screenshot")).firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "A finger-drawn lasso must produce a selection")
+    }
     func testFingerInkUndoRedoAndReopen() {
         continueAfterFailure = false
         let app = XCUIApplication()

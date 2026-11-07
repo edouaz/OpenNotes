@@ -33,7 +33,6 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
     var changed: ((PageElement?) -> Void)?
     var edit: (() -> Void)?
     var contextualAction: ((PageSelectionAction) -> Void)?
-    var selectsBeforeEditing = false
     private(set) var isObjectSelected = false
     var allowsBodySelection = true { didSet { updateControls() } }
     override var isUserInteractionEnabled: Bool { didSet { updateControls() } }
@@ -55,14 +54,12 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
     let resizeHandle = UIView()           // bottom-right corner
     private(set) var cornerHandles: [UIView] = []   // top-left, top-right, bottom-left
     var allResizeHandles: [UIView] { cornerHandles + [resizeHandle] }
-    let dragHandle = UIButton(type: .system)
-    let textButton = UIButton(type: .system)
     private var initialSize = CGSize.zero
     private var initialCenter = CGPoint.zero
-    private let selectionOutline = CAShapeLayer()
     private lazy var bodyAccessibility = StickyNoteAccessibilityElement(accessibilityContainer: self)
     private var compactControls = false
     private var textEditor: UITextView?
+    private var editingZoom: CGFloat = 1   // fonts are scaled by this for the editor's whole lifetime, whatever the viewport does
     var isEditingInline: Bool { textEditor != nil }
     init(item: PageElement) {
         self.item = item
@@ -94,14 +91,6 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
             addSubview(handle)
             if corner != 3 { cornerHandles.append(handle) }
         }
-        dragHandle.setImage(UIImage(systemName: "ellipsis"), for: .normal)
-        dragHandle.tintColor = .darkGray
-        dragHandle.isAccessibilityElement = true
-        dragHandle.accessibilityLabel = "Sticky note actions"
-        dragHandle.isHidden = true
-        let dragPan = StickyDragPan(target: self, action: #selector(drag(_:)))
-        configure(dragPan); dragHandle.addGestureRecognizer(dragPan)
-        addSubview(dragHandle)
         deleteBadge.backgroundColor = UIColor.white.withAlphaComponent(0.92)
         deleteBadge.layer.cornerRadius = 9; deleteBadge.isUserInteractionEnabled = false
         deleteBadge.layer.shadowColor = UIColor.black.cgColor; deleteBadge.layer.shadowOpacity = 0.18; deleteBadge.layer.shadowRadius = 1.5; deleteBadge.layer.shadowOffset = CGSize(width: 0, height: 0.5)
@@ -113,16 +102,6 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
         deleteButton.isHidden = true
         addSubview(deleteButton)
         if let image = deleteButton.imageView { deleteButton.bringSubviewToFront(image) }
-        textButton.setImage(UIImage(systemName: "textformat"), for: .normal)
-        textButton.tintColor = .darkGray; textButton.accessibilityLabel = item.text.isEmpty ? "Add text to sticky note" : "Edit sticky note text"
-        textButton.addTarget(self, action: #selector(editText), for: .touchUpInside)
-        textButton.isHidden = item.isLocked == true || item.collapsed == true
-        addSubview(textButton)
-        selectionOutline.fillColor = UIColor.clear.cgColor
-        selectionOutline.strokeColor = UIColor.systemBlue.cgColor
-        selectionOutline.lineWidth = 1.5
-        selectionOutline.isHidden = true
-        layer.addSublayer(selectionOutline)
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapBody))
         configure(tap); addGestureRecognizer(tap)
         let pan = StickyDragPan(target: self, action: #selector(drag(_:)))
@@ -142,7 +121,7 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
                 UIAction(title: "Send to Back") { [weak self] _ in self?.contextualAction?(.sendBack) }
             ]),
             UIAction(title: "Lock", image: UIImage(systemName: "lock")) { [weak self] _ in self?.contextualAction?(.lockSelection) },
-            UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.changed?(nil) }
+            UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in Diagnostics.shared.record("sticky.delete", ["source": "menu"]); self?.changed?(nil) }
         ])
         if item.isLocked == true {
             menu = UIMenu(children: [UIAction(title: "Unlock", image: UIImage(systemName: "lock.open")) { [weak self] _ in
@@ -152,8 +131,6 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
             }])
             showsMenuAsPrimaryAction = true
         }
-        dragHandle.menu = menu
-        dragHandle.showsMenuAsPrimaryAction = true
         if item.collapsed == true && item.isLocked != true { menu = nil }
         isAccessibilityElement = false
         bodyAccessibility.accessibilityTraits = .button
@@ -199,12 +176,11 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
             allResizeHandles.forEach { $0.alpha = 0 }
             UIView.animate(withDuration: 0.15) { self.allResizeHandles.forEach { $0.alpha = 1 } }
         } else { allResizeHandles.forEach { $0.alpha = 1 } }
-        dragHandle.isHidden = true; textButton.isHidden = true
         // Chevron: one tap collapses. Not while finger-drawing owns the page, read-only, or locked.
         // Small notes keep their whole body as the drag target; use the actions menu there.
-        collapseButton.isHidden = !(expanded && canManipulate && allowsBodySelection && isUserInteractionEnabled) || compactControls
+        // Only on the selected note: unselected notes carry no chrome, so a Pencil stroke can start anywhere on them.
+        collapseButton.isHidden = !(expanded && isObjectSelected && canManipulate && allowsBodySelection && isUserInteractionEnabled) || compactControls
         deleteButton.isHidden = !showsHandles || compactControls
-        selectionOutline.isHidden = true
         accessibilityElements = [bodyAccessibility] + [collapseButton, deleteButton].filter { !$0.isHidden } + allResizeHandles.filter { !$0.isHidden }
         updateAccessibilityActions()
     }
@@ -226,6 +202,12 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
             UIAccessibilityCustomAction(name: "Edit text") { [weak self] _ in self?.beginInlineEditing(); return true }
         ]
     }
+    func bodyContains(_ point: CGPoint) -> Bool {
+        item.collapsed != true && UIBezierPath(roundedRect: bounds, cornerRadius: item.stickyRadius * max(zoom, 0.01)).contains(point)
+    }
+    var canDragBody: Bool { item.collapsed != true && isObjectSelected && item.isLocked != true && canManipulate && textEditor == nil }
+    /// Tap on the body, delivered by the page: select, then edit text on a second tap.
+    func tapBodyFromPage() { tapBody() }
     @objc private func tapBody() {
         if item.collapsed == true { toggleCollapsed() }
         else if isObjectSelected { beginInlineEditing() }
@@ -235,17 +217,16 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         // The resize grips sit just outside the corners, so a selected note answers a little beyond its body.
         if compactControls && isObjectSelected { return bounds.insetBy(dx: -44, dy: 0).contains(point) }
-        if isObjectSelected { return bounds.insetBy(dx: -14, dy: -14).contains(point) }
+        if isObjectSelected { return bounds.insetBy(dx: -14, dy: -14).contains(point) || (!deleteButton.isHidden && deleteButton.frame.contains(point)) }
         return super.point(inside: point, with: event)
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        if textEditor == nil, event?.allTouches?.contains(where: { $0.type == .pencil }) == true { return nil }
         let hit = super.hitTest(point, with: event)
-        if hit === self {
-            if item.collapsed != true && !isObjectSelected && !allowsBodySelection { return nil }
-            let path = UIBezierPath(roundedRect: bounds, cornerRadius: item.stickyRadius * max(zoom, 0.01))
-            if !path.contains(point) { return nil }
-        }
+        // An open note's body belongs to the page: Pencil and highlighter write on it, fingers scroll over it, and
+        // PageScrollView turns taps, drags and long presses on it into note actions (`bodyContains`). The touch type
+        // cannot be read reliably during hit-testing (iPadOS 16), so nothing here depends on it.
+        if hit === self, item.collapsed != true { return nil }
+        if hit === self, !UIBezierPath(roundedRect: bounds, cornerRadius: item.stickyRadius * max(zoom, 0.01)).contains(point) { return nil }
         return hit
     }
     override func layoutSubviews() {
@@ -255,16 +236,13 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
         if compactControls != compact { compactControls = compact; updateControls() }
         bodyAccessibility.accessibilityFrameInContainerSpace = isObjectSelected
             ? bounds.insetBy(dx: min(44, bounds.width / 3), dy: min(44, bounds.height / 3)) : bounds
-        selectionOutline.frame = bounds
-        selectionOutline.path = UIBezierPath(roundedRect: bounds.insetBy(dx: 0.75, dy: 0.75), cornerRadius: item.stickyRadius * max(zoom, 0.01)).cgPath
         let bottom = max(0, bounds.height - 44)
-        dragHandle.frame = CGRect(x: compactControls ? -44 : 0, y: bottom, width: 44, height: 44)
-        textButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
-        // Header chevron, centred; red cross inside the top-left corner (clear of the outside grips).
-        collapseButton.frame = CGRect(x: max(0, bounds.width / 2 - 22), y: 0, width: 44, height: 32)
-        collapseButton.contentVerticalAlignment = .top; collapseButton.contentEdgeInsets = UIEdgeInsets(top: 7, left: 0, bottom: 0, right: 0)
-        deleteButton.frame = CGRect(x: 6, y: 6, width: 26, height: 26)
-        deleteBadge.frame = CGRect(x: 4, y: 4, width: 18, height: 18)
+        // Header chevron, centred; the red cross straddles the top edge above it, far from every grip.
+        let crossCenter: CGFloat = -11
+        collapseButton.frame = CGRect(x: max(0, bounds.width / 2 - 22), y: crossCenter + 22, width: 44, height: 25)
+        collapseButton.contentVerticalAlignment = .top; collapseButton.contentEdgeInsets = UIEdgeInsets(top: 1, left: 0, bottom: 0, right: 0)
+        deleteButton.frame = CGRect(x: bounds.width / 2 - 22, y: crossCenter - 22, width: 44, height: 44)
+        deleteBadge.frame = CGRect(x: 13, y: 13, width: 18, height: 18)
         // The bracket glyph sits 9 pt into its 44 pt cell, so these origins put each grip 5 pt outside its corner.
         let outside: CGFloat = 14, inside: CGFloat = 30
         // Small notes: the single grip moves fully outside so it never covers the body's drag target.
@@ -276,7 +254,10 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
             cornerHandles[2].frame = CGRect(x: -outside, y: bounds.height - inside, width: 44, height: 44)
         }
     }
-    @objc private func deleteNote() { guard item.isLocked != true, canManipulate else { return }; changed?(nil) }
+    @objc private func deleteNote() {
+        guard item.isLocked != true, canManipulate else { return }
+        Diagnostics.shared.record("sticky.delete", ["source": "cross"]); changed?(nil)
+    }
     @objc func toggleCollapsed() { guard item.isLocked != true else { return }; item.collapsed = !(item.collapsed ?? false); setObjectSelected(false); changed?(item) }
     func resizeNote(to size: CGSize) {
         guard canManipulate, item.isLocked != true else { return }
@@ -312,8 +293,10 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
         }
         return result(low)
     }
+    private(set) var isResizing = false
     @objc private func resize(_ pan: UIPanGestureRecognizer) {
         guard canManipulate, item.isLocked != true else { return }
+        isResizing = pan.state == .began || pan.state == .changed
         if pan.state == .began { initialSize = bounds.size; initialCenter = center; resizePreviewBegan?() }
         let scale = max(zoom, 0.01)
         let translation = (pan as? StickyDragPan)?.translationFromInitialTouch(in: superview) ?? pan.translation(in: superview)
@@ -337,9 +320,9 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
             bounds.size = initialSize; center = initialCenter; resizePreviewCancelled?()
         }
     }
-    @objc private func editText() { beginInlineEditing() }
     func beginInlineEditing() {
         guard item.isLocked != true, item.collapsed != true, textEditor == nil else { return }
+            editingZoom = zoom
             let editor = UITextView(frame: bounds)
             let text = NSMutableAttributedString(attributedString: RichTextDocument.attributed(item))
             text.enumerateAttribute(.font, in: NSRange(location: 0, length: text.length)) { value, range, _ in
@@ -379,7 +362,7 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
     private func draft(from textView: UITextView) -> PageElement? {
         let text = NSMutableAttributedString(attributedString: textView.attributedText)
         text.enumerateAttribute(.font, in: NSRange(location: 0, length: text.length)) { value, range, _ in
-            if let font = value as? UIFont { text.addAttribute(.font, value: font.withSize(min(96, max(8, font.pointSize / max(zoom, 0.01)))), range: range) }
+            if let font = value as? UIFont { text.addAttribute(.font, value: font.withSize(min(96, max(8, font.pointSize / max(editingZoom, 0.01)))), range: range) }
         }
         guard let data = try? RichTextDocument.encode(text) else { return nil }
         var updated = item
@@ -432,12 +415,12 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
             transform = CGAffineTransform(rotationAngle: item.rotation ?? 0); movePreviewCancelled?()
         }
     }
-    @objc private func drag(_ pan: UIPanGestureRecognizer) {
+    @objc func drag(_ pan: UIPanGestureRecognizer) {
         move(state: pan.state, delta: (pan as? StickyDragPan)?.translationFromInitialTouch(in: superview) ?? pan.translation(in: superview))
     }
     @objc private func dragCollapsed(_ hold: UILongPressGestureRecognizer) {
         let location = hold.location(in: superview)
-        if hold.state == .began { initialCenter = location }
+        if hold.state == .began { initialCenter = location; UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
         move(state: hold.state, delta: CGPoint(x: location.x - initialCenter.x, y: location.y - initialCenter.y))
     }
 }

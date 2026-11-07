@@ -47,7 +47,7 @@ final class InteractivePageTurn: NSObject, UIGestureRecognizerDelegate {
         return shouldBegin(velocity: gesture.velocity(in: view))
     }
     func shouldBegin(velocity: CGPoint) -> Bool {
-        guard let view, !view.canvas.hasActiveStroke, !disabled, !committing, adjacent == nil, !view.isPinching, !view.canvas.isZooming else { return false }
+        guard let view, !view.canvas.hasActivePencilStroke, !disabled, !committing, adjacent == nil, !view.isPinching, !view.canvas.isZooming else { return false }
         if view.canvas.zoomScale > view.canvas.minimumZoomScale + 0.02 {
             guard !view.verticalPaging, abs(velocity.x) > abs(velocity.y) else { return false }
             let scroll = view.canvas
@@ -79,6 +79,7 @@ final class InteractivePageTurn: NSObject, UIGestureRecognizerDelegate {
         current?.layer.removeAllAnimations(); adjacent?.layer.removeAllAnimations()
         current?.removeFromSuperview(); adjacent?.removeFromSuperview(); blocker?.removeFromSuperview(); blocker = nil
         current = nil; adjacent = nil; committing = false
+        view?.selectionView?.isHidden = false
         animationFinished = false; navigationFinished = false; installed = false
     }
     private func previewFrame(in view: PageScrollView) -> CGRect? {
@@ -117,6 +118,7 @@ final class InteractivePageTurn: NSObject, UIGestureRecognizerDelegate {
             sourcePageID = installedPageID ?? (view.canvas.delegate as? WritingCanvas.Coordinator)?.pageID
             Diagnostics.shared.record("paging.begin", ["direction": String(direction), "vertical": String(vertical)])
             prepare?(direction)
+            view.selectionView?.dismissMenu(); view.selectionView?.isHidden = true
             current = view.snapshotView(afterScreenUpdates: false)
             current?.frame = view.bounds
             current?.isUserInteractionEnabled = false

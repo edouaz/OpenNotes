@@ -24,12 +24,10 @@ final class StickyManipulationTests: XCTestCase {
         control.frame = CGRect(x: 0, y: 0, width: 180, height: 160)
         control.layoutIfNeeded()
         XCTAssertTrue(control.resizeHandle.isHidden)
-        XCTAssertTrue(control.textButton.isHidden)
         XCTAssertFalse(control.isAccessibilityElement)
         let body = control.accessibilityElements?.first as? UIAccessibilityElement
         XCTAssertTrue(body?.accessibilityActivate() == true)
         // Selected notes stay visually quiet: four corner handles, no per-note buttons.
-        XCTAssertTrue(control.textButton.isHidden && control.dragHandle.isHidden)
         XCTAssertFalse(control.collapseButton.isHidden, "Header chevron collapses in one tap")
         XCTAssertFalse(control.deleteButton.isHidden, "Selected notes show the red delete cross")
         XCTAssertEqual(control.cornerHandles.count, 3)
@@ -39,14 +37,15 @@ final class StickyManipulationTests: XCTestCase {
         XCTAssertNil(control.hitTest(CGPoint(x: 90, y: 80), with: nil))
         control.setObjectSelected(true)
         XCTAssertFalse(control.resizeHandle.isHidden)
-        XCTAssertTrue(control.hitTest(CGPoint(x: 90, y: 80), with: nil) === control)
+        XCTAssertNil(control.hitTest(CGPoint(x: 90, y: 80), with: nil), "The page owns the body: Pencil writes through it")
+        XCTAssertTrue(control.bodyContains(CGPoint(x: 90, y: 80)) && control.canDragBody)
         control.setObjectSelected(false)
         XCTAssertTrue(control.resizeHandle.isHidden)
     }
 
     func testManipulationRecognizersAcceptOnlyOneDirectTouch() {
         let control = StickyNoteControl(item: PageElement(kind: .stickyNote))
-        let gestures = ((control.gestureRecognizers ?? []) + (control.resizeHandle.gestureRecognizers ?? []) + (control.dragHandle.gestureRecognizers ?? [])).filter { $0.delegate === control }
+        let gestures = ((control.gestureRecognizers ?? []) + (control.resizeHandle.gestureRecognizers ?? [])).filter { $0.delegate === control }
         XCTAssertFalse(gestures.isEmpty)
         for gesture in gestures {
             XCTAssertEqual(gesture.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.direct.rawValue)])
@@ -67,7 +66,7 @@ final class StickyManipulationTests: XCTestCase {
         XCTAssertFalse(recognizer.observeTouchBegin(firstView: UIView(), count: 1))
         recognizer.reset()
         XCTAssertTrue(tracking.isEmpty)
-        XCTAssertTrue(recognizer.observeTouchBegin(firstView: note.textButton, count: 1))
+        XCTAssertTrue(recognizer.observeTouchBegin(firstView: note.collapseButton, count: 1))
         XCTAssertTrue(recognizer.note === note)
         XCTAssertEqual(tracking, [true])
         recognizer.reset()
@@ -155,7 +154,7 @@ final class StickyManipulationTests: XCTestCase {
         let control = StickyNoteControl(item: PageElement(kind: .stickyNote))
         control.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         control.setObjectSelected(true); control.layoutIfNeeded()
-        XCTAssertTrue(control.hitTest(CGPoint(x: 22, y: 22), with: nil) === control)
+        XCTAssertTrue(control.bodyContains(CGPoint(x: 22, y: 22)))
         XCTAssertTrue(control.hitTest(CGPoint(x: 66, y: 22), with: nil) === control.resizeHandle)
     }
 
@@ -262,8 +261,9 @@ final class StickyCornerResizeTests: XCTestCase {
     func testChevronAndCrossStayOutOfTheWayOfWriting() {
         let control = StickyNoteControl(item: PageElement(kind: .stickyNote, x: 20, y: 20, width: 180, height: 160))
         control.frame = CGRect(x: 0, y: 0, width: 180, height: 160); control.layoutIfNeeded()
-        XCTAssertFalse(control.collapseButton.isHidden)
-        XCTAssertTrue(control.deleteButton.isHidden, "The cross appears only for the selected note")
+        XCTAssertTrue(control.collapseButton.isHidden && control.deleteButton.isHidden, "Unselected notes carry no chrome")
+        control.setObjectSelected(true)
+        XCTAssertFalse(control.collapseButton.isHidden || control.deleteButton.isHidden)
         control.allowsBodySelection = false          // finger drawing owns the page
         XCTAssertTrue(control.collapseButton.isHidden)
         control.allowsBodySelection = true; control.canManipulate = false   // read-only

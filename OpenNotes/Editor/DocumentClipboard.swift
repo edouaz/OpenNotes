@@ -17,8 +17,9 @@ enum DocumentClipboard {
             ($0.element.zIndex ?? Double($0.offset)) < ($1.element.zIndex ?? Double($1.offset))
         }.map(\.element)
         let candidates = Set((filteredPage(page, settings: settings).elements ?? []).map(\.id))
+        let hidden = page.collapsedContentParents
         return ordered.enumerated().compactMap { index, item in
-            guard candidates.contains(item.id), item.kind != .highlight, item.visibleBounds.intersects(path.bounds) else { return nil }
+            guard candidates.contains(item.id), item.kind != .highlight, item.parentID.map({ !hidden.contains($0) }) != false, item.visibleBounds.intersects(path.bounds) else { return nil }
             var visible = item.visiblePath.intersection(path.cgPath)
             for cover in ordered.dropFirst(index + 1) where cover.kind == .stickyNote {
                 visible = visible.subtracting(cover.visiblePath)
@@ -31,11 +32,46 @@ enum DocumentClipboard {
         InkDrawing(strokes: drawing.strokes.filter { contains($0, inside: path) })
     }
     static func contains(_ stroke: InkStroke, inside path: UIBezierPath) -> Bool {
+        contains(stroke, inside: path, edges: edges(of: path.cgPath))
+    }
+    /// `edges`: the lasso's `edges(of:)`, computed once by callers testing many strokes.
+    static func contains(_ stroke: InkStroke, inside path: UIBezierPath, edges: [(CGPoint, CGPoint)]) -> Bool {
         guard stroke.renderBounds.intersects(path.bounds) else { return false }
+        // Plain strokes: linear distance test against the lasso edges (CGPath booleans are superlinear in samples).
+        if stroke.vectorOutline == nil {
+            let rule: CGPathFillRule = path.usesEvenOddFillRule ? .evenOdd : .winding
+            let outline = path.cgPath
+            return EraserEditing.touches(stroke, segments: edges, reach: 0) { outline.contains($0, using: rule) }
+        }
         // Test in stroke space: transforming the lasso is far cheaper than copying the stroke's whole path.
         var inverse = stroke.transform.inverted()
         guard let local = path.cgPath.copy(using: &inverse) else { return false }
         return stroke.paintedPath.intersects(local, using: path.usesEvenOddFillRule ? .evenOdd : .winding)
+    }
+    // Closed polyline of every subpath; curves are flattened (lassos are polylines, so this is a safety net).
+    static func edges(of path: CGPath) -> [(CGPoint, CGPoint)] {
+        var result: [(CGPoint, CGPoint)] = [], start = CGPoint.zero, current = CGPoint.zero
+        func line(to p: CGPoint) { result.append((current, p)); current = p }
+        func close() { if current != start { line(to: start) } }
+        path.applyWithBlock { element in
+            let p = element.pointee.points
+            switch element.pointee.type {
+            case .moveToPoint: close(); start = p[0]; current = p[0]
+            case .addLineToPoint: line(to: p[0])
+            case .addQuadCurveToPoint:
+                let a = current
+                for i in 1...8 { let u = CGFloat(i) / 8, v = 1 - u; line(to: CGPoint(x: v * v * a.x + 2 * u * v * p[0].x + u * u * p[1].x, y: v * v * a.y + 2 * u * v * p[0].y + u * u * p[1].y)) }
+            case .addCurveToPoint:
+                let a = current
+                for i in 1...8 { let u = CGFloat(i) / 8, v = 1 - u
+                    line(to: CGPoint(x: v * v * v * a.x + 3 * v * v * u * p[0].x + 3 * v * u * u * p[1].x + u * u * u * p[2].x,
+                                     y: v * v * v * a.y + 3 * v * v * u * p[0].y + 3 * v * u * u * p[1].y + u * u * u * p[2].y)) }
+            case .closeSubpath: close()
+            @unknown default: break
+            }
+        }
+        close()
+        return result.isEmpty ? [(current, current)] : result
     }
     static func copyInk(_ drawing: InkDrawing) throws {
         guard !drawing.strokes.isEmpty else { throw CocoaError(.validationMissingMandatoryProperty) }
@@ -69,7 +105,9 @@ extension DocumentClipboard {
         var resources: [String: Data]
     }
     static func payload(page: NotePage, drawing: InkDrawing, path: UIBezierPath, settings: EditorToolSettings, resources: [String: Data]) throws -> Payload {
-        let selected = SelectionMoveSnapshot(page: page, drawing: drawing, path: path, settings: settings)
+        try payload(SelectionMoveSnapshot(page: page, drawing: drawing, path: path, settings: settings), resources: resources)
+    }
+    static func payload(_ selected: SelectionMoveSnapshot, resources: [String: Data]) throws -> Payload {
         guard !selected.isEmpty else { throw CocoaError(.validationMissingMandatoryProperty) }
         let names = Set(selected.elements.compactMap(\.resource))
         guard names.allSatisfy({ resources[$0] != nil }) else { throw CocoaError(.fileNoSuchFile) }

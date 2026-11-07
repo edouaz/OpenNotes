@@ -113,7 +113,7 @@ final class StickyIntegrationTests: XCTestCase {
         canvas.drawingGestureRecognizer.isEnabled = true
         control.sendActions(for: .touchUpInside)
         XCTAssertFalse(control.isEditingInline)
-        control.textButton.sendActions(for: .touchUpInside)
+        control.beginInlineEditing()
         XCTAssertTrue(control.isEditingInline)
         XCTAssertEqual(view.editingInlineNoteID, control.item.id)
         XCTAssertFalse(canvas.drawingGestureRecognizer.isEnabled)
@@ -195,7 +195,8 @@ final class StickyIntegrationTests: XCTestCase {
     func testInlineDraftCallbackPreservesPageFontSizeBeforeFocusEnds() throws {
         let note = PageElement(kind: .stickyNote, text: "Before")
         let control = StickyNoteControl(item: note); control.zoom = 2
-        let editor = UITextView()
+        control.beginInlineEditing()
+        let editor = try XCTUnwrap(control.subviews.compactMap { $0 as? UITextView }.first)
         editor.attributedText = NSAttributedString(string: "Draft before switching tabs 👋", attributes: [.font: UIFont.boldSystemFont(ofSize: 32)])
         var captured: PageElement?
         control.draftChanged = { captured = $0 }
@@ -277,7 +278,6 @@ final class StickyIntegrationTests: XCTestCase {
         let control = StickyNoteControl(item: note)
         control.frame = CGRect(x: 0, y: 0, width: note.width, height: note.height)
         control.collapseButton.isHidden = true; control.resizeHandle.isHidden = true
-        control.dragHandle.isHidden = true; control.textButton.isHidden = true
         control.layoutIfNeeded()
         let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
         let visible = UIGraphicsImageRenderer(size: PageRenderer.size(page), format: format).image { output in
@@ -286,7 +286,7 @@ final class StickyIntegrationTests: XCTestCase {
             control.layer.render(in: output.cgContext)
         }
         XCTAssertEqual(baseline.pngData(), visible.pngData(), "Interaction overlays must not redraw the sticky body above the ink")
-        control.textButton.sendActions(for: .touchUpInside)
+        control.beginInlineEditing()
         let editor = try XCTUnwrap(control.subviews.compactMap { $0 as? UITextView }.first)
         XCTAssertEqual(editor.frame, control.bounds, "Inline editor must cover the original static text")
         XCTAssertEqual(editor.backgroundColor, UIColor.clear, "The shared renderer owns the appearance while text editing stays transparent")

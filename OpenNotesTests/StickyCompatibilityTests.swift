@@ -131,8 +131,9 @@ final class StickyCompatibilityTests: XCTestCase {
         let control = StickyNoteControl(item: note)
         control.frame = CGRect(x: 0, y: 0, width: 220, height: 180)
         control.layoutIfNeeded()
-        XCTAssertNil(control.hitTest(CGPoint(x: 1, y: 1), with: nil))
-        XCTAssertTrue(control.hitTest(CGPoint(x: 110, y: 90), with: nil) === control)
+        // The page routes body touches through `bodyContains`; it must follow the rounded corners.
+        XCTAssertFalse(control.bodyContains(CGPoint(x: 1, y: 1)))
+        XCTAssertTrue(control.bodyContains(CGPoint(x: 110, y: 90)))
     }
 
     func testResizeAtLowZoomDoesNotEnlargeSmallNotes() {

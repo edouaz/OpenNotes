@@ -121,6 +121,14 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
     }
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { inkContentView }
     var hasActiveStroke: Bool { activeTouch != nil }
+    // A finger stroke must stay interruptible: its second finger starts two-finger navigation.
+    var hasActivePencilStroke: Bool { activeTouch?.type == .pencil }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer, hasActivePencilStroke {
+            Diagnostics.shared.record("gesture.blockedByPencil", ["gesture": "canvasPan"]); return false
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
     private var activeTouch: UITouch?
     private var buffer = InkSampleBuffer()
     private var startedAt: TimeInterval = 0
@@ -178,13 +186,14 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
     func cancelActiveStroke() { cancelStroke() }
     func cancelStroke() {
         let hadTouch = activeTouch != nil
+        if hadTouch { FrameMonitor.shared.end(["result": "cancelled", "input": activeTouch?.type == .pencil ? "pencil" : "finger"]) }
         activeTouch = nil; awaitingCircle = false
         holdTimer?.invalidate(); holdTimer = nil
         heldAdjustment = nil; heldPoints = nil; capturedInk = nil; capturedEraser = nil
         buffer.cancel(); pendingEstimateStroke = nil; live = nil
         eraseIndex = nil; eraseSources = [:]; eraseEdits = [:]; eraseBounds = [:]; erasedSampleCount = 0
         inkContentView.clearErasurePreview()
-        inkContentView.preview.path = nil; hoverLayer.isHidden = true
+        inkContentView.endPreview(); hoverLayer.isHidden = true
         if hadTouch { inkDelegate?.canvasViewDidEndUsingTool(self) }
     }
     func accepts(_ type: UITouch.TouchType) -> Bool {
@@ -218,6 +227,8 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
     private func beginDrawing(_ touch: UITouch, event: UIEvent?) {
         onStrokeBegan?()
         inkDelegate?.canvasViewDidBeginUsingTool(self)
+        if capturedInk != nil { inkContentView.clipPreview(startingAt: touch.location(in: inkContentView)) }
+        FrameMonitor.shared.begin(capturedEraser != nil ? "eraser" : "ink")
         collect(touch, event: event, predicting: false)
         showPreview()
         scheduleHold()
@@ -245,9 +256,10 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         defer {
             self.activeTouch = nil; holdTimer?.invalidate(); holdTimer = nil
             heldAdjustment = nil; heldPoints = nil; awaitingCircle = false
-            inkContentView.preview.path = nil; hoverLayer.isHidden = true
+            inkContentView.endPreview(); hoverLayer.isHidden = true
             inkDelegate?.canvasViewDidEndUsingTool(self)
         }
+        FrameMonitor.shared.end(["input": activeTouch.type == .pencil ? "pencil" : "finger", "samples": String(buffer.samples.count), "pageStrokes": String(drawing.strokes.count)])
         if awaitingCircle { return }
         if let adjustment = heldAdjustment { heldPoints = adjustment.points(at: activeTouch.location(in: inkContentView)) }
         else { collect(activeTouch, event: event, predicting: false) }
@@ -556,8 +568,18 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
         preview.zPosition = CGFloat(drawing.strokes.count + 1)
         CATransaction.commit()
     }
+    // The preview shows what the commit will keep: attachment is decided by the first sample.
+    func clipPreview(startingAt point: CGPoint) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        preview.mask = occlusion.previewMask(startingAt: point, in: bounds)
+        CATransaction.commit()
+    }
+    func endPreview() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        preview.path = nil; preview.mask = nil
+        CATransaction.commit()
+    }
     func show(_ stroke: InkStroke) {
-        // shortcut: sticky ink clips at commit; add preview clipping if edge feedback needs to match before pen-up.
         CATransaction.begin(); CATransaction.setDisableActions(true)
         configure(preview, stroke: stroke)
         CATransaction.commit()
@@ -577,7 +599,8 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
         shape.fillRule = .nonZero
     }
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if gestureRecognizer is UILongPressGestureRecognizer {
+        // UIKit also asks the touched view about its ancestors' recognizers (paste hold, lasso hold): only veto our own.
+        if gestureRecognizer is UILongPressGestureRecognizer, gestureRecognizer.view === self {
             return owner?.tool is InkInkingTool && owner?.canCircleLongPress?(gestureRecognizer.location(in: self)) == true
         }
         return super.gestureRecognizerShouldBegin(gestureRecognizer)

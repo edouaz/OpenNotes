@@ -57,9 +57,11 @@ struct LibraryScreen: View {
         }.preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
     }
     private var navigationContent: some View {
-        HStack(spacing: 0) {
+        // Filtering, sorting and full-text matching run once per pass, not once per reader.
+        let notes = notes
+        return HStack(spacing: 0) {
             if sizeClass == .regular { libraryRail.frame(width: 206); Divider() }
-            libraryContent
+            libraryContent(notes)
         }
         .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
             if sizeClass != .regular {
@@ -95,7 +97,7 @@ struct LibraryScreen: View {
                 Menu {
                     if trash {
                         Button("Empty Trash", systemImage: "trash", role: .destructive) { emptyTrashShown = true }
-                            .disabled(store.matchingNotes("", trash: true).isEmpty)
+                            .disabled(!store.library.notes.contains { $0.deletedAt != nil && $0.purgedAt == nil })
                     }
                     Button("Import", systemImage: "square.and.arrow.down") { importer = true }
                     Button("Diagnostics & logs", systemImage: "stethoscope") { diagnosticsShown = true }
@@ -209,10 +211,10 @@ struct LibraryScreen: View {
                 }
             }
     }
-    private var libraryContent: some View {
+    private func libraryContent(_ notes: [NoteDocument]) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                libraryHeader
+                libraryHeader(noteCount: notes.count)
                 if !trash { libraryControls }
                 if selectingNotes && !selectedNotes.isEmpty && !trash {
                     HStack {
@@ -253,11 +255,11 @@ struct LibraryScreen: View {
             }.padding(dynamicTypeSize.isAccessibilitySize || sizeClass != .regular ? 16 : 28)
         }.frame(maxWidth: .infinity).background(Color(uiColor: .systemGroupedBackground))
     }
-    private var libraryHeader: some View {
+    private func libraryHeader(noteCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(trash ? "Trash" : favorites ? "Favorites" : selectedFolderID.flatMap { id in store.library.folders.first { $0.id == id }?.name } ?? "Your notebooks")
                 .font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
-            Text(trash ? "Restore notebooks whenever you need them." : "\(notes.count) notebooks · All your ideas, together.")
+            Text(trash ? "Restore notebooks whenever you need them." : "\(noteCount) notebooks · All your ideas, together.")
                 .font(.subheadline).foregroundStyle(.secondary)
         }.padding(.top, 8)
     }

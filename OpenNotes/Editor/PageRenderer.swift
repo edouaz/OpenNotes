@@ -69,16 +69,13 @@ enum PageRenderer {
                     context.addPath(path); context.strokePath()
                 }
                 if item.collapsed == true {
-                    UIColor.darkGray.setStroke(); context.setLineWidth(1.5)
-                    let icon = noteRect.insetBy(dx: 12, dy: 11)
-                    context.move(to: CGPoint(x: icon.minX, y: icon.minY))
-                    context.addLine(to: CGPoint(x: icon.maxX - 6, y: icon.minY))
-                    context.addLine(to: CGPoint(x: icon.maxX, y: icon.minY + 6))
-                    context.addLine(to: CGPoint(x: icon.maxX, y: icon.maxY))
-                    context.addLine(to: CGPoint(x: icon.minX, y: icon.maxY)); context.closePath(); context.strokePath()
-                    context.move(to: CGPoint(x: icon.maxX - 6, y: icon.minY))
-                    context.addLine(to: CGPoint(x: icon.maxX - 6, y: icon.minY + 6))
-                    context.addLine(to: CGPoint(x: icon.maxX, y: icon.minY + 6)); context.strokePath()
+                    // Three soft text lines: "a note is folded here", readable on every fill colour.
+                    UIColor.black.withAlphaComponent(0.32).setStroke(); context.setLineWidth(2.5); context.setLineCap(.round)
+                    for (row, width) in [CGFloat(20), 20, 12].enumerated() {
+                        let y = noteRect.midY - 7 + CGFloat(row) * 7
+                        context.move(to: CGPoint(x: noteRect.midX - 10, y: y)); context.addLine(to: CGPoint(x: noteRect.midX - 10 + width, y: y))
+                    }
+                    context.strokePath()
                 } else {
                     RichTextDocument.attributed(item).draw(with: noteRect.insetBy(dx: 8, dy: 8), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
                 }

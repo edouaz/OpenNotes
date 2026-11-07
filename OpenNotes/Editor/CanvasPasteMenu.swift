@@ -2,7 +2,9 @@ import UIKit
 
 extension PageScrollView: UIEditMenuInteractionDelegate {
     @objc func showPasteMenu(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began, longPressMenuEnabled else { return }
+        guard gesture.state == .began else { return }
+        Diagnostics.shared.record("menu.longpress.began", ["enabled": String(longPressMenuEnabled)])
+        guard longPressMenuEnabled else { Diagnostics.shared.record("menu.longpress.disabled"); return }
         let point = gesture.location(in: self)
         Diagnostics.shared.record("menu.longpress")
         pasteMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
@@ -18,6 +20,10 @@ extension PageScrollView: UIEditMenuInteractionDelegate {
     }
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
         let point = configuration.sourcePoint
+        if let note = note(at: point), let actions = note.menu?.children {
+            Diagnostics.shared.record("menu.note")
+            return UIMenu(children: actions)
+        }
         let clipboard = UIPasteboard.general
         let available = clipboard.contains(pasteboardTypes: [DocumentClipboard.selectionType, DocumentClipboard.inkType]) || clipboard.hasImages || clipboard.hasStrings
         return UIMenu(children: [
