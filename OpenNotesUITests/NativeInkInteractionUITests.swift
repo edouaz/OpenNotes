@@ -17,7 +17,8 @@ final class NativeInkInteractionUITests: XCTestCase {
         let lasso = app.buttons["editor.tool.lasso"]
         XCTAssertTrue(lasso.waitForExistence(timeout: 5)); lasso.tap()
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.2)).press(forDuration: 0.05, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)))
-        let menu = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Take Screenshot")).firstMatch
+        // Copy is first in a nonempty selection; screenshot actions can be in the menu's overflow on iPhone.
+        let menu = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy")).firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 5), "A finger-drawn lasso must produce a selection")
     }
     func testFingerInkUndoRedoAndReopen() {
