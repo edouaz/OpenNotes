@@ -765,6 +765,24 @@ final class CloudSyncTests: XCTestCase {
         XCTAssertEqual(meta?["folder_id"] as? String, store.library.note(id: id)?.folderID.uuidString.lowercased())
         XCTAssertNotNil(meta?["updated_at"] as? String)
     }
+    func testCommitFallsBackWhenServerLacksMetaMigration() async throws {
+        let store = await store(), owner = UUID()
+        _ = await store.create(title: "Fallback")
+        _ = await store.flush()
+        var bodies: [[String: Any]] = []
+        let cloud = cloud(store, owner: owner) { request in
+            if request.url!.path.contains("commit_notebook_revision") {
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                bodies.append(body)
+                if body["p_meta"] != nil { throw NSError(domain: "Supabase", code: 404) }
+            }
+            return Data("[]".utf8)
+        }
+        await cloud.sync()
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertNil(bodies.last?["p_meta"])
+        XCTAssertEqual(cloud.phase, .synced)
+    }
     func testMetadataBackfillRunsOnceAndSurvivesMissingFunction() async throws {
         let store = await store(), owner = UUID()
         _ = await store.create(title: "Old notebook")

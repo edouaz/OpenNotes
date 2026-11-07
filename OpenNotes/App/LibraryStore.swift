@@ -39,8 +39,10 @@ final class LibraryStore: ObservableObject {
         loadTask = task
         defer { loadTask = nil }
         do {
-            let loaded = try await task.value
-            if !ready { library = loaded; ready = true; cloud.start(); Diagnostics.shared.record("library.load.ready", ["notes": String(loaded.notes.count), "pages": String(loaded.pages.count)]) }
+            var loaded = try await task.value
+            let adopted = loaded.adoptSharedHomeFolder()
+            if adopted { Diagnostics.shared.record("library.home.adopted", ["notes": String(loaded.folders.first?.noteIDs.count ?? 0)]) }
+            if !ready { library = loaded; ready = true; if adopted { persist() }; cloud.start(); Diagnostics.shared.record("library.load.ready", ["notes": String(loaded.notes.count), "pages": String(loaded.pages.count)]) }
         } catch { Diagnostics.shared.failure("library.failure", error: error); self.error = "Could not open: \(error.localizedDescription)" }
     }
     /// Deletes every notebook and resource on this device and starts from an empty library. Caller has already cleared the cloud.

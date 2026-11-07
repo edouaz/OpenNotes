@@ -48,6 +48,22 @@ struct NoteLibrarySnapshot: Codable, Equatable, Sendable {
 }
 
 extension NoteLibrarySnapshot {
+    /// The library UI treats `folders.first` as home. Libraries created before `NotebookFolder.homeID` have a random home
+    /// ID, so once synced each device showed the other's home as an ordinary "My notebooks" folder. Merge such a home into
+    /// the shared one; the emptied legacy folder is trashed so the change reaches the other devices. Returns true if changed.
+    @discardableResult mutating func adoptSharedHomeFolder(now: Date = Date()) -> Bool {
+        guard var legacy = folders.first, legacy.id != NotebookFolder.homeID, parentFolder(of: legacy.id) == nil else { return false }
+        var home = folder(id: NotebookFolder.homeID) ?? NotebookFolder(id: NotebookFolder.homeID, name: legacy.name)
+        home.deletedAt = nil
+        home.noteIDs += legacy.noteIDs.filter { !home.noteIDs.contains($0) }
+        home.childFolderIDs += legacy.childFolderIDs.filter { !home.childFolderIDs.contains($0) && $0 != home.id }
+        for index in notes.indices where notes[index].folderID == legacy.id { notes[index].folderID = home.id }
+        legacy.noteIDs = []; legacy.childFolderIDs = []; legacy.deletedAt = legacy.deletedAt ?? now
+        folders = [home] + folders.dropFirst().filter { $0.id != home.id } + [legacy]
+        for index in folders.indices { folders[index].childFolderIDs.removeAll { $0 == home.id } }
+        return true
+    }
+
     var rootFolders: [NotebookFolder] {
         let childIDs = Set(folders.flatMap(\.childFolderIDs))
         return folders
@@ -114,7 +130,10 @@ extension NoteLibrarySnapshot {
     }
 
     func firstPage(in noteID: UUID) -> NotePage? {
-        pages(in: noteID).first
+        // One pass with no array copy or sort: library cards call this per visible notebook.
+        guard let note = note(id: noteID) else { return nil }
+        let pageIDs = Set(note.pageIDs)
+        return pages.lazy.filter { pageIDs.contains($0.id) }.min { $0.index < $1.index }
     }
 
     func pages(in noteID: UUID) -> [NotePage] {

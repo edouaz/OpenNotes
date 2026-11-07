@@ -426,6 +426,7 @@ final class CloudSync: ObservableObject {
                     failedNotebooks.insert(head.notebook_id)
                     let message = Self.failureMessage(error, stage: stage)
                     downloadFailures.append(message); newFailures[head.notebook_id] = message
+                    Diagnostics.shared.record("sync.download.failed", ["note": String(head.notebook_id.uuidString.prefix(8)), "error": String(message.prefix(200))])
                 }
             }
             var uploadFailures: [String] = []
@@ -449,10 +450,15 @@ final class CloudSync: ObservableObject {
                     let revisionID = UUID()
                     let path = "\(owner.uuidString.lowercased())/\(link.remoteID.uuidString.lowercased())/\(revisionID.uuidString.lowercased()).catnote"
                     _ = try await request("storage/v1/object/notebooks/" + path, method: "POST", body: data, contentType: "application/octet-stream")
-                    let commit: [String: Any] = ["p_notebook_id": link.remoteID.uuidString.lowercased(), "p_revision_id": revisionID.uuidString.lowercased(),
+                    var commit: [String: Any] = ["p_notebook_id": link.remoteID.uuidString.lowercased(), "p_revision_id": revisionID.uuidString.lowercased(),
                         "p_expected_revision": link.revision.map { $0.uuidString.lowercased() } as Any? ?? NSNull(), "p_checksum": checksum, "p_object_path": path,
                         "p_meta": Self.metadata(archive.note, pageCount: archive.pages.count)]
-                    _ = try await request("rest/v1/rpc/commit_notebook_revision", method: "POST", body: JSONSerialization.data(withJSONObject: commit))
+                    do { _ = try await request("rest/v1/rpc/commit_notebook_revision", method: "POST", body: JSONSerialization.data(withJSONObject: commit)) }
+                    catch let error as NSError where error.domain == "Supabase" && error.code == 404 {
+                        // ponytail: server without the p_meta migration still has the 5-argument commit; drop the metadata and retry.
+                        commit["p_meta"] = nil
+                        _ = try await request("rest/v1/rpc/commit_notebook_revision", method: "POST", body: JSONSerialization.data(withJSONObject: commit))
+                    }
                     state.links[note.id.uuidString] = CloudLink(modifiedAt: archive.note.updatedAt, remoteID: link.remoteID, revision: revisionID, checksum: checksum)
                     lastUpload[note.id] = Date()
                     Diagnostics.shared.record("sync.uploaded", ["note": String(note.id.uuidString.prefix(8)), "bytes": String(data.count)])
@@ -463,6 +469,7 @@ final class CloudSync: ObservableObject {
                     if (failure.domain == "Supabase" && failure.code == 401) || failure.domain == NSURLErrorDomain || error is CancellationError { throw error }
                     let message = Self.failureMessage(error, stage: stage)
                     uploadFailures.append(message); newFailures[note.id] = message
+                    Diagnostics.shared.record("sync.upload.failed", ["note": String(note.id.uuidString.prefix(8)), "error": String(message.prefix(200))])
                 }
             }
             // Recheck editors after network awaits so newly staged work is never reported as synced.

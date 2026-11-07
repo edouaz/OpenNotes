@@ -106,6 +106,8 @@ extension CloudSync {
                 snapshot.folders[index].childFolderIDs.append(row.id)
             }
         }
+        // A remote row can bring back the other device's legacy home as the first folder; keep one shared home.
+        if snapshot.adoptSharedHomeFolder() { Diagnostics.shared.record("sync.home.adopted") }
         if snapshot.containsFolderCycle() {
             guard let row = remote.first else { throw CocoaError(.fileReadCorruptFile) }
             folderConflict = CloudFolderConflict(id: row.id, name: "Folder hierarchy", remoteFingerprint: try row.fingerprint(), remoteUpdatedAt: row.updated_at, hierarchy: remote)
