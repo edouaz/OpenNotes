@@ -6,6 +6,11 @@ export const swiftNow = () => Date.now() / 1000 - 978307200;
 export const metaOf = archive => ({ title: archive.note.title, folder_id: archive.note.folderID.toLowerCase(), page_count: archive.pages.length,
   updated_at: new Date((archive.note.updatedAt + 978307200) * 1000).toISOString(), trashed: archive.note.deletedAt != null, purged: archive.note.purgedAt != null, favorite: archive.note.favorite === true });
 const id = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+// Typed failure: mcp.mjs maps `code` to the error the client sees (FILE_TOO_LARGE, INVALID_PDF, QUOTA_EXCEEDED).
+export const coded = (code, message) => Object.assign(new Error(message), { code });
+// Linear scan on purpose: the previous `(?:[A-Za-z0-9+/]{4})*` group made V8 recurse once per 4 characters and threw
+// "Maximum call stack size exceeded" on any resource above ~3.3 MB (~4.5M base64 characters).
+const isBase64 = value => typeof value === 'string' && value.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(value);
 const safeResource = name => typeof name === 'string' && name.length > 0 && name.length < 128 && name !== '.' && name !== '..' && /^[\p{L}\p{N}._ -]+$/u.test(name);
 
 // Reject structural corruption before saving; this does not replace Swift's full archive validator.
@@ -18,9 +23,9 @@ export function validateArchive(archive) {
   if (archive.note.pageIDs.some(value => !id(value)) || archive.pages.length !== archive.note.pageIDs.length || new Set(archive.note.pageIDs.map(x => x.toLowerCase())).size !== archive.pages.length) throw new Error('Invalid notebook page order');
   let bytes = 0;
   for (const [name, encoded] of Object.entries(archive.resources)) {
-    if (!safeResource(name) || typeof encoded !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error('Invalid resource');
+    if (!safeResource(name) || !isBase64(encoded)) throw new Error('Invalid resource');
     bytes += Buffer.byteLength(encoded, 'base64');
-    if (bytes > 150 * 1024 * 1024) throw new Error('Archive resources exceed size limit');
+    if (bytes > 150 * 1024 * 1024) throw coded('FILE_TOO_LARGE', 'Archive resources exceed the 150 MiB limit');
   }
   for (const [index, page] of archive.pages.entries()) {
     if (!id(page.id) || page.id.toLowerCase() !== archive.note.pageIDs[index]?.toLowerCase() || page.noteID?.toLowerCase() !== archive.note.id.toLowerCase() ||

@@ -25,6 +25,39 @@ Optional access policy (all default to the safest value):
 - `ALLOW_DESTRUCTIVE=true` (needs `ALLOW_WRITE`): register `remove_element`, `remove_ink`, `reorder_pages`, `restore_revision` and allow `trashed: true`. These carry `destructiveHint`. Unknown future tools default to "write".
 
 Production (2026-11-07, `dpl_6ZKTukFE6fTsAaNTXFcCvcFHdSv1`, then the tuple-schema fix): `ALLOW_WRITE=true`, `ALLOW_DESTRUCTIVE` unset. `mark_text` highlights, boxes or underlines a phrase on a page by locating its words with `pdftotext -bbox` on the exported page, so the agent never guesses coordinates; handwriting is not searchable.
+
+New notebooks from a PDF: `create_notebook` with `pdfBase64`, or with `uploadPath` from `create_upload` called without `notebookID`, contains exactly the PDF pages. `import_pdf` / `import_uploaded_pdf` append to an existing notebook and never remove pages.
+
+### Errors and PDF text (2026-11-07)
+
+Tool failures return `isError: true` with `{ "error": { "code", "message", "retryable", "action", "requestID" } }`. `requestID` is Vercel's `x-vercel-id`, also logged as `tool.error` with the tool, code, step and technical cause (never arguments, notebook content, tokens or signed URLs).
+
+| Code | Meaning | Client should |
+|---|---|---|
+| `INVALID_ARGUMENT` | The call itself is wrong | Fix the arguments |
+| `NOT_FOUND` | Unknown notebook, page, element or text | Re-list / re-read |
+| `REVISION_CONFLICT` | `expectedRevision` is stale; nothing was written | Read again, redo the change on the current revision (never retried server-side) |
+| `FILE_TOO_LARGE` | PDF above `MAX_PDF_BYTES` (50 MiB), stored archive above `ARCHIVE_MAX_BYTES` (150 MiB) or Supabase answered 413 | Do not retry; the message gives the limit. A PDF weighs ~4/3 of its size in the archive |
+| `INVALID_PDF` | Empty, truncated, encrypted or otherwise unreadable PDF | Replace the file |
+| `QUOTA_EXCEEDED` | Supabase storage quota (HTTP 402/507 or "quota" in the message; mapping not yet seen against a real quota error) | Free space or raise the plan |
+| `RENDER_FAILED` | Fonts or Poppler failed on the server | Report with `requestID` |
+| `INTERNAL` | Anything else | Report with `requestID` |
+
+### Importing many PDFs: `import_pdfs` (2026-11-08)
+
+`import_pdfs({ folderID, files: [{ path: "Logique/TP/TP1/Énoncé.pdf", title? }], importID? })` imports a whole tree, one notebook per PDF (exactly its pages, original PDF kept), creating the sub-folders under `folderID`. Bytes never go through MCP.
+
+1. First call: creates the folders, returns `importID` and a signed `uploadURL` per file (state `awaiting_upload`). PUT each file (`Content-Type: application/octet-stream`), in parallel.
+2. Call again with the **same `importID` and `files`**: uploaded files are imported (`done` with `notebookID`, `pageCount`; `failed` with `error.code`; `queued` if the call's time budget ran out, so call again). The response has `progress` and per-stage `timingsMs`.
+3. Resume = repeat step 2. State is not stored: folder, notebook and upload IDs are derived from (user, `importID`, relative path), so a finished file is recognised by ID (never by title), folders are never duplicated, and a new `importID` is a new import even with identical names. An unreadable or too-large file is removed from storage and comes back as `awaiting_upload`; a transient failure keeps its bytes and is retried as is.
+
+Paths are NFC-normalised, relative, `/`-separated, at most 8 folder levels, `.pdf` only, 100 files per call. Env: `IMPORT_CONCURRENCY` (default 3 imports in flight), `IMPORT_BUDGET_MS` (default 40000: no new file is started after this), `MAX_PDF_BYTES`, `ARCHIVE_MAX_BYTES`. Existing tools are unchanged. Appending a PDF already stored in the notebook reuses the stored copy.
+
+Bug fixed the same day: `validateArchive` checked base64 with a regex whose group made V8 recurse once per 4 characters; any resource above ~3.3 MB (~4.5 M base64 characters) threw `Maximum call stack size exceeded`, which the old error mapping reported as `INVALID_ARGUMENT`. It now uses a linear check, and a stack overflow is `INTERNAL`.
+
+PDF imports store Poppler-extracted `pdfText` per page (same `PageTextContent` record as the app; `blocks` is empty). Pages imported before that are extracted on read, without saving. `get_page_text` reports `pdfText`: `available`, `empty` (no text layer, e.g. a scan; no OCR on the server) or `failed`.
+
+Export fonts: `fonts-dejavu-core` only ships DejaVu Sans regular and bold; the oblique faces come from `fonts-dejavu-extra`, which the image must install (checked by `test/mcp-fixes.test.mjs`). A missing font fails with `RENDER_FAILED` naming the variable, never a silent fallback.
 - `REQUIRE_OAUTH_CLIENT=true`: accept only tokens that carry a `client_id` claim (issued through the OAuth consent flow), rejecting the app's own password-login session tokens. Leave off until a real client authorization has been validated end to end, then turn it on.
 - `RATE_LIMIT_PER_MIN` (default 120 per user), `IP_RATE_LIMIT_PER_MIN` (default 600 per address, applied before the token check): HTTP 429 with `Retry-After`.
 - `MAX_BODY_MB` (default 8; Vercel itself caps bodies at 4.5 MB): larger files use the transfer tools.

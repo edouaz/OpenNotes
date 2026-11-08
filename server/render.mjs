@@ -7,7 +7,10 @@ import { join } from 'node:path';
 import { validateArchive } from './archive.mjs';
 import rtfParser from 'rtf-parser';
 import fontkit from '@pdf-lib/fontkit';
-const exec = promisify(execFile);
+const run = promisify(execFile);
+// Server-side failures (fonts, Poppler) carry a code and step so tools report them as server errors, not bad calls.
+export const renderError = (step, message) => Object.assign(new Error(message), { code: 'RENDER_FAILED', step });
+const exec = (tool, args, options) => run(tool, args, options).catch(cause => { throw renderError(tool, `${tool} failed: ${cause.code ?? cause.signal ?? 'error'}`); });
 const color = (hex, fallback = '#000000') => {
   const value = /^#[0-9a-f]{6}$/i.test(hex ?? '') ? hex : fallback;
   return rgb(parseInt(value.slice(1, 3), 16) / 255, parseInt(value.slice(3, 5), 16) / 255, parseInt(value.slice(5, 7), 16) / 255);
@@ -115,14 +118,16 @@ export async function exportPDF(archive, selectedPageID = null) {
   const pages = selectedPageID ? archive.pages.filter(p => p.id.toLowerCase() === selectedPageID.toLowerCase()) : archive.pages;
   if (!pages.length) throw new Error('Page not found');
   const result = await PDFDocument.create(); result.registerFontkit(fontkit);
-  async function fontFor(path, fallback) {
-    if (path) { try { return await result.embedFont(await readFile(path), { subset: true }); } catch { throw new Error('Could not load configured export font'); } }
+  async function fontFor(variable, fallback) {
+    const path = process.env[variable];
+    // A server configuration fault, not a bad call: name the variable and file so the operator can fix the image.
+    if (path) { try { return await result.embedFont(await readFile(path), { subset: true }); } catch (cause) { throw renderError('font', `Could not load configured export font ${variable}=${path} (${cause.code ?? cause.message})`); } }
     return result.embedFont(fallback);
   }
-  const font = await fontFor(process.env.NOTES_FONT_REGULAR, StandardFonts.Helvetica);
-  const bold = await fontFor(process.env.NOTES_FONT_BOLD, StandardFonts.HelveticaBold);
-  const italic = await fontFor(process.env.NOTES_FONT_ITALIC, StandardFonts.HelveticaOblique);
-  const boldItalic = await fontFor(process.env.NOTES_FONT_BOLD_ITALIC, StandardFonts.HelveticaBoldOblique);
+  const font = await fontFor('NOTES_FONT_REGULAR', StandardFonts.Helvetica);
+  const bold = await fontFor('NOTES_FONT_BOLD', StandardFonts.HelveticaBold);
+  const italic = await fontFor('NOTES_FONT_ITALIC', StandardFonts.HelveticaOblique);
+  const boldItalic = await fontFor('NOTES_FONT_BOLD_ITALIC', StandardFonts.HelveticaBoldOblique);
   for (const source of pages) {
     const width = source.width ?? 794, height = source.height ?? 1123, page = result.addPage([width, height]);
     page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1,1,1) });
@@ -243,4 +248,15 @@ export function matchRects(words, query, maxMatches = 50) {
     i += terms.length - 1;
   }
   return matches;
+}
+
+// Text layer of every page of a PDF, via Poppler (pages are separated by form feeds).
+// '' means the page has no text layer (scanned image), not a failure: failures throw.
+export async function pdfPageTexts(data) {
+  const dir = await mkdtemp(join(tmpdir(), 'opennotes-text-'));
+  try {
+    await writeFile(join(dir, 'source.pdf'), data);
+    const { stdout } = await exec('pdftotext', ['-enc', 'UTF-8', join(dir, 'source.pdf'), '-'], { timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
+    return stdout.split('\f');   // index by PDF page; a trailing entry after the last form feed is ignored by callers
+  } finally { await rm(dir, { recursive: true, force: true }); }
 }

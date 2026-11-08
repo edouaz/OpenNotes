@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { editNotebook, newBlankPage, swiftNow, validateArchive } from './archive.mjs';
+import { coded, editNotebook, newBlankPage, swiftNow, validateArchive } from './archive.mjs';
+import { pdfPageTexts } from './render.mjs';
 
-export function createNotebook(title, folderID) {
-  const id = randomUUID(), time = swiftNow();
+export function createNotebook(title, folderID, id = randomUUID()) {
+  const time = swiftNow();
   const { page, drawing } = newBlankPage(id, 0);
   return editNotebook({ version: 2, note: { id, folderID, title, pageIDs: [page.id], createdAt: time, updatedAt: time }, pages: [page], resources: { [page.drawingResourceID]: drawing } }, { title });
 }
@@ -106,22 +107,59 @@ export function removeInk(archive, pageID, strokeIDs) {
 
 export async function importPDF(archive, data) {
   const { PDFDocument } = await import('pdf-lib');
-  if (!Buffer.isBuffer(data) || data.length === 0 || data.length > 50 * 1024 * 1024) throw new Error('Invalid PDF size');
-  const pdf = await PDFDocument.load(data, { ignoreEncryption: false });
+  const limit = Number(process.env.MAX_PDF_BYTES ?? 50 * 1024 * 1024);
+  if (!Buffer.isBuffer(data) || data.length === 0) throw coded('INVALID_PDF', 'The PDF is empty');
+  if (data.length > limit) throw coded('FILE_TOO_LARGE', `The PDF is ${data.length} bytes, above the ${limit} byte limit`);
+  // pdf-lib accepts some truncated files in load() and only fails (with a TypeError) when the page tree is read, so both are "not a readable PDF".
+  let pdf, count; try { pdf = await PDFDocument.load(data, { ignoreEncryption: false }); count = pdf.getPageCount(); } catch (error) { throw coded('INVALID_PDF', `Not a readable PDF: ${error.message}`); }
   const next = structuredClone(validateArchive(archive));
-  if (!pdf.getPageCount() || next.pages.length + pdf.getPageCount() > 10000) throw new Error('Invalid PDF page count');
-  const resource = `${randomUUID()}.pdf`;
-  next.resources[resource] = data.toString('base64');
+  if (!count || next.pages.length + count > 10000) throw new Error('Invalid PDF page count');
+  // Appending the same PDF again reuses the stored copy instead of adding another one to the archive.
+  const encoded = data.toString('base64'), same = Object.entries(next.resources).find(([name, value]) => name.endsWith('.pdf') && value === encoded);
+  const resource = same ? same[0] : `${randomUUID()}.pdf`;
+  // Same record the iPad stores. Extraction failing must not lose the import: the page then simply has no pdfText.
+  let texts = null; try { texts = await pdfPageTexts(data); } catch {}
+  next.resources[resource] = encoded;
   for (const [pdfIndex, source] of pdf.getPages().entries()) {
     const { page, drawing } = newBlankPage(next.note.id, next.pages.length);
     const crop = source.getCropBox(), angle = ((source.getRotation().angle % 360) + 360) % 360;
     if (![0,90,180,270].includes(angle)) throw new Error('Unsupported PDF rotation');
     page.width = angle % 180 ? crop.height : crop.width; page.height = angle % 180 ? crop.width : crop.height;
     page.backgroundID = resource; page.pdfIndex = pdfIndex;
+    if (texts) page.pdfText = pdfTextContent(texts[pdfIndex]);
     next.pages.push(page); next.note.pageIDs.push(page.id); next.resources[page.drawingResourceID] = drawing;
   }
   next.note.updatedAt = swiftNow();
   return validateArchive(next);
+}
+
+// A new notebook holding only the PDF's pages. The starter page is dropped in memory before
+// anything is saved, so it can never be user content; existing notebooks go through importPDF untouched.
+export async function createNotebookFromPDF(title, folderID, data, id) {
+  const base = createNotebook(title, folderID, id), next = await importPDF(base, data);
+  next.pages = next.pages.slice(1).map((page, index) => ({ ...page, index }));
+  next.note.pageIDs = next.pages.map(page => page.id);
+  delete next.resources[base.pages[0].drawingResourceID];
+  return validateArchive(next);
+}
+
+// Mirrors the app's PageTextContent (PDFTextIndex.extract): a page without a text layer needs recognition.
+const pdfTextContent = text => ({ source: 'pdf', status: (text ?? '').trim() ? 'available' : 'needsRecognition', text: text ?? '', blocks: [], engine: 'poppler' });
+
+// PDF pages imported by an older server carry no pdfText. Reads extract it on the fly (never saved) and say per page
+// whether text is 'available', 'empty' (no text layer, e.g. a scan) or 'failed'.
+export async function withPDFText(archive) {
+  const next = structuredClone(archive), status = {}, cache = new Map();
+  for (const page of next.pages) {
+    if (!page.backgroundID?.endsWith('.pdf') || page.pdfIndex == null) continue;
+    if (!page.pdfText) {
+      if (!cache.has(page.backgroundID)) cache.set(page.backgroundID, pdfPageTexts(Buffer.from(next.resources[page.backgroundID] ?? '', 'base64')).catch(() => null));
+      const texts = await cache.get(page.backgroundID);
+      if (texts) page.pdfText = pdfTextContent(texts[page.pdfIndex]);
+    }
+    status[page.id.toLowerCase()] = !page.pdfText ? 'failed' : page.pdfText.text.trim() ? 'available' : 'empty';
+  }
+  return { archive: next, status };
 }
 
 export async function addImage(archive, pageID, data, rect) {

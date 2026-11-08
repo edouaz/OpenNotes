@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createServer as createHTTPServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -53,7 +54,7 @@ createHTTPServer(async (req, res) => {
     for await (const chunk of req) { bytes += chunk.length; if (bytes > maxBody) return json(res, 413, { error: 'Request too large' }); chunks.push(chunk); }
     let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { return json(res, 400, { error: 'Invalid JSON' }); }
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    const server = createServer(client, data.user.id, policy); res.on('close', () => { void transport.close(); void server.close(); });
+    const server = createServer(client, data.user.id, policy, { requestID: String(req.headers['x-vercel-id'] ?? randomUUID()) }); res.on('close', () => { void transport.close(); void server.close(); });
     await server.connect(transport); await transport.handleRequest(req, res, body);
   } catch { if (!res.headersSent) json(res, 500, { error: 'Server error' }); else res.end(); }
 }).listen(Number(process.env.PORT ?? 3000));

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { metaOf, validateArchive } from './archive.mjs';
+import { coded, metaOf, validateArchive } from './archive.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -44,7 +44,10 @@ export class NotebookRepository {
     const notebookID = archive.note.id.toLowerCase(), revisionID = randomUUID();
     const path = `${this.ownerID}/${notebookID}/${revisionID}.catnote`;
     const bytes = Buffer.from(JSON.stringify(archive));
-    if (bytes.length > 150 * 1024 * 1024) throw new Error('Archive exceeds storage limit');
+    // The stored archive is the whole JSON (PDFs inside as base64, ~4/3 of their size). Set ARCHIVE_MAX_BYTES to the smallest of the
+    // Supabase global limit and the notebooks bucket limit to fail here, before the upload, instead of on Supabase's 413.
+    const limit = Number(process.env.ARCHIVE_MAX_BYTES ?? 150 * 1024 * 1024);
+    if (bytes.length > limit) throw coded('FILE_TOO_LARGE', `Notebook archive is ${bytes.length} bytes, above the ${limit} byte storage limit (a PDF counts about 4/3 of its size)`);
     const { error: storageError } = await this.client.storage.from('notebooks').upload(path, bytes, { contentType: 'application/octet-stream', upsert: false });
     if (storageError) throw storageError;
     const { data, error } = await this.client.rpc('commit_notebook_revision', {
