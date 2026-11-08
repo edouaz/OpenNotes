@@ -319,7 +319,11 @@ final class SelectionDragPreview: UIView {
         // Not `frame`: the view may already carry a drag transform by the time the bitmap arrives.
         let frame = rendered.foregroundFrame
         foreground.bounds = CGRect(origin: .zero, size: frame.size); foreground.center = CGPoint(x: frame.midX, y: frame.midY)
+        updateLiftShadowPath()
         onReady?(); onReady = nil
+    }
+    private static func padding(_ snapshot: SelectionMoveSnapshot) -> CGFloat {
+        snapshot.elements.contains { $0.kind == .stickyNote && $0.stickyShadowOpacity > 0 } ? 8 : 2
     }
     private static func render(page: NotePage, artwork: PageArtwork?, drawing: InkDrawing, snapshot: SelectionMoveSnapshot,
                                zoom: CGFloat, offset: CGPoint, size: CGSize, displayScale: CGFloat) -> Rendered? {
@@ -327,7 +331,7 @@ final class SelectionDragPreview: UIView {
         let visible = CGRect(x: offset.x / zoom, y: offset.y / zoom, width: size.width / zoom, height: size.height / zoom)
             .intersection(CGRect(origin: .zero, size: snapshot.pageSize))
         guard !visible.isNull else { return nil }
-        let padding: CGFloat = snapshot.elements.contains { $0.kind == .stickyNote && $0.stickyShadowOpacity > 0 } ? 8 : 2
+        let padding = Self.padding(snapshot)
         let crop = snapshot.bounds.insetBy(dx: -padding, dy: -padding)
         // Only the area the selection leaves behind needs covering: cost follows the selection, not the screen.
         let behind = crop.intersection(visible)
@@ -383,7 +387,16 @@ final class SelectionDragPreview: UIView {
         foreground.layer.shadowOffset = CGSize(width: 0, height: 6)
         let shadow = CABasicAnimation(keyPath: "shadowOpacity"); shadow.fromValue = 0; shadow.toValue = 0.22; shadow.duration = 0.15
         foreground.layer.shadowOpacity = 0.22; foreground.layer.add(shadow, forKey: "lift")
+        updateLiftShadowPath()
         UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : 0.15) { self.moveFreely(by: self.lastFreeDelta) }
+    }
+    /// An explicit shadow shape: without it Core Animation re-derives the silhouette from the bitmap's alpha
+    /// on every frame, which is what made note drags hitch on A9/A10 iPads.
+    private func updateLiftShadowPath() {
+        guard liftScale != 1, foreground.bounds.width > 0 else { return }
+        let note = snapshot.elements.first { $0.kind == .stickyNote }
+        let shape = foreground.bounds.insetBy(dx: Self.padding(snapshot) * zoom, dy: Self.padding(snapshot) * zoom)
+        foreground.layer.shadowPath = UIBezierPath(roundedRect: shape, cornerRadius: CGFloat(note?.stickyRadius ?? 0) * zoom).cgPath
     }
     func moveFreely(by screenDelta: CGPoint) {
         lastFreeDelta = screenDelta

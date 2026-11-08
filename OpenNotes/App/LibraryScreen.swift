@@ -275,7 +275,7 @@ struct LibraryScreen: View {
                 Button("Documents") { filter = 0 }
                 Button("Favorites") { filter = 1 }
                 Button("Trash") { filter = 2 }
-            } label: { Label("Show", systemImage: "line.3.horizontal.decrease").fixedSize() }.accessibilityIdentifier("library.filter")
+            } label: { Label("Show", systemImage: "line.3.horizontal.decrease").fixedSize().frame(minHeight: 44).contentShape(Rectangle()) }.accessibilityIdentifier("library.filter")
             Button(selectingNotes ? "Done" : "Select") { selectingNotes.toggle(); selectedNotes = [] }.accessibilityIdentifier("library.select")
             Picker("Library layout", selection: $layout) {
                 Image(systemName: "square.grid.2x2").tag("grid")

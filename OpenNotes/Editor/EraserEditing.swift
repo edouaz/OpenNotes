@@ -23,12 +23,16 @@ enum EraserEditing {
             guard let localArea = area.copy(using: &inverse) else { return [stroke] }
             // Plain strokes are a union of dots and quads: a distance test is exact and linear, whereas CGPath
             // booleans grow superlinearly with sample count. Edited strokes carry an outline and keep the path test.
-            let hit = stroke.vectorOutline == nil ? touches(stroke, along: points, reach: radius) : originalPaint.intersects(localArea)
+            let split = stroke.vectorOutline == nil ? nil : contours(of: originalPaint, near: localArea.boundingBoxOfPath)
+            let hit = split.map { !$0.near.isEmpty && $0.near.intersects(localArea) } ?? touches(stroke, along: points, reach: radius)
             guard hit else { return [stroke] }
             if mode == .precision {
-                var remaining = stroke.vectorOutline == nil ? paint(of: stroke, subtracting: localArea) : originalPaint.subtracting(localArea)
-                // Untouched primitives stay raw (bigger than a simplified outline): past this size take the compact full boolean.
-                if stroke.vectorOutline == nil, InkVectorPath(remaining).elements.count > 40_000 { remaining = originalPaint.subtracting(localArea) }
+                // Only geometry around the eraser goes through the boolean, so cost follows the eraser, not the stroke.
+                // ponytail: untouched primitives stay raw, so a long edited stroke stores a bigger outline; compact off-main if files grow.
+                let remaining: CGPath
+                if let split {
+                    let kept = CGMutablePath(); kept.addPath(split.far); kept.addPath(split.near.subtracting(localArea)); remaining = kept
+                } else { remaining = paint(of: stroke, subtracting: localArea) }
                 guard !remaining.isEmpty else { return [] }
                 var clipped = stroke
                 clipped.vectorOutline = InkVectorPath(remaining)
@@ -103,6 +107,31 @@ enum EraserEditing {
         result.addPath(far)
         if !near.isEmpty { result.addPath(near.subtracting(area)) }
         return result
+    }
+
+    /// Splits an outline into contours whose box meets `box` and the rest. A hole lies inside its outer contour's box,
+    /// so contours boxed inside a near one go with it and booleans never see half a shape.
+    static func contours(of path: CGPath, near box: CGRect) -> (near: CGMutablePath, far: CGMutablePath) {
+        var pieces: [CGMutablePath] = []
+        path.applyWithBlock { pointer in
+            let e = pointer.pointee
+            if e.type == .moveToPoint || pieces.isEmpty { pieces.append(CGMutablePath()) }
+            let piece = pieces[pieces.count - 1]
+            switch e.type {
+            case .moveToPoint: piece.move(to: e.points[0])
+            case .addLineToPoint: piece.addLine(to: e.points[0])
+            case .addQuadCurveToPoint: piece.addQuadCurve(to: e.points[1], control: e.points[0])
+            case .addCurveToPoint: piece.addCurve(to: e.points[2], control1: e.points[0], control2: e.points[1])
+            case .closeSubpath: piece.closeSubpath()
+            @unknown default: break
+            }
+        }
+        let boxes = pieces.map(\.boundingBoxOfPath), touching = boxes.filter { $0.intersects(box) }
+        let near = CGMutablePath(), far = CGMutablePath()
+        for (piece, bounds) in zip(pieces, boxes) {
+            (bounds.intersects(box) || touching.contains { $0.contains(bounds) } ? near : far).addPath(piece)
+        }
+        return (near, far)
     }
 
     // True when the swept eraser (capsule of `reach` around `points`) overlaps the stroke's dots and quads.

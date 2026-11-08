@@ -111,7 +111,7 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
             if !clear(origin) { origin = clamped(CGPoint(x: 24, y: 24)) }   // pinned to the viewport edge: just inside, under the handles
         }
         deleteButton.frame = CGRect(origin: origin, size: CGSize(width: 44, height: 44))
-        deleteBadge.frame = CGRect(x: 11, y: 11, width: 22, height: 22)
+        deleteBadge.frame = CGRect(x: 11, y: 11, width: 22, height: 22); deleteBadge.layer.shadowPath = UIBezierPath(ovalIn: deleteBadge.bounds).cgPath
     }
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in

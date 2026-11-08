@@ -242,7 +242,7 @@ final class StickyNoteControl: UIButton, UITextViewDelegate, UIGestureRecognizer
         collapseButton.frame = CGRect(x: max(0, bounds.width / 2 - 22), y: crossCenter + 22, width: 44, height: 25)
         collapseButton.contentVerticalAlignment = .top; collapseButton.contentEdgeInsets = UIEdgeInsets(top: 1, left: 0, bottom: 0, right: 0)
         deleteButton.frame = CGRect(x: bounds.width / 2 - 22, y: crossCenter - 22, width: 44, height: 44)
-        deleteBadge.frame = CGRect(x: 13, y: 13, width: 18, height: 18)
+        deleteBadge.frame = CGRect(x: 13, y: 13, width: 18, height: 18); deleteBadge.layer.shadowPath = UIBezierPath(ovalIn: deleteBadge.bounds).cgPath
         // The bracket glyph sits 9 pt into its 44 pt cell, so these origins put each grip 5 pt outside its corner.
         let outside: CGFloat = 14, inside: CGFloat = 30
         // Small notes: the single grip moves fully outside so it never covers the body's drag target.

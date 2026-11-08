@@ -36,7 +36,8 @@ extension EditorSession {
             guard snapshot.strokeIndices.contains(index) else { return stroke }
             return InkDrawing(strokes: [stroke]).transformed(using: CGAffineTransform(translationX: delta.x, y: delta.y)).strokes[0]
         }
-        replaceContent(InkDrawing(strokes: strokes), elements: moved, actionName: "Move selection", attachObjects: true)
+        let reattached = reattachingMovedInk(strokes, moved: snapshot.strokeIDs, elements: moved, movedElements: snapshot.elementIDs)
+        replaceContent(InkDrawing(strokes: reattached), elements: moved, actionName: "Move selection", attachObjects: true)
         return durable ? await flush() : true
     }
 

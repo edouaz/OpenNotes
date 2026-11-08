@@ -105,8 +105,14 @@ extension EditorSession {
         guard center.x.isFinite, center.y.isFinite else { return false }
         let a = cos(rotation) * scale, b = sin(rotation) * scale
         let c = -sin(rotation) * sy, d = cos(rotation) * sy
-        let transform = CGAffineTransform(a: a, b: b, c: c, d: d, tx: center.x - a * center.x - c * center.y, ty: center.y - b * center.x - d * center.y)
+        var transform = CGAffineTransform(a: a, b: b, c: c, d: d, tx: center.x - a * center.x - c * center.y, ty: center.y - b * center.x - d * center.y)
         let size = PageRenderer.size(page)
+        // Slide the result back onto the page instead of letting ink overflow or rejecting the whole transform.
+        // ponytail: conservative box of the rotated bounds; a tilted selection may stop a few points short of the edge.
+        let result = snapshot.bounds.applying(transform)
+        guard result.width <= size.width, result.height <= size.height else { return false }
+        transform = transform.concatenating(CGAffineTransform(translationX: max(0, -result.minX) - max(0, result.maxX - size.width),
+                                                              y: max(0, -result.minY) - max(0, result.maxY - size.height)))
         let elements = (page.elements ?? []).map { source -> PageElement in
             guard snapshot.elementIDs.contains(source.id) else { return source }
             var item = source
@@ -120,7 +126,8 @@ extension EditorSession {
         let ink = canvas.drawing.strokes.enumerated().map { index, stroke in
             snapshot.strokeIndices.contains(index) ? InkDrawing(strokes: [stroke]).transformed(using: transform).strokes[0] : stroke
         }
-        replaceContent(InkDrawing(strokes: ink), elements: elements, actionName: rotation == 0 ? "Resize selection" : "Rotate selection")
+        let reattached = reattachingMovedInk(ink, moved: snapshot.strokeIDs, elements: elements, movedElements: snapshot.elementIDs)
+        replaceContent(InkDrawing(strokes: reattached), elements: elements, actionName: rotation == 0 ? "Resize selection" : "Rotate selection")
         return durable ? await flush() : true
     }
 }

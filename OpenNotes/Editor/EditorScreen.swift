@@ -199,7 +199,7 @@ struct EditorScreen: View {
         }
     }
     private var quickActions: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 4) {
             Button {
                 if let returnToLibrary { returnToLibrary() }
                 else { Task { if await session.flush() { dismiss() } } }
@@ -287,6 +287,12 @@ struct EditorScreen: View {
             if !session.searchHighlights.isEmpty {
                 Button("Clear search results") { session.searchHighlights = [] }
             }
+            if let page = session.page, page.backgroundID == nil {
+                Picker(selection: Binding(get: { page.template }, set: { setTemplate($0) })) {
+                    ForEach(PageTemplate.allCases) { Text($0.title).tag($0) }
+                } label: { Label("Page style", systemImage: "squareshape.split.3x3") }
+                    .pickerStyle(.menu).disabled(session.isReadOnly).accessibilityIdentifier("editor.pageStyle")
+            }
             Button("Change paper", systemImage: "doc") { paperShown = true }.disabled(session.isReadOnly)
             Button("Image", systemImage: "photo") { elementsShown = true }.disabled(session.isReadOnly)
             Button("Text box", systemImage: "textformat") { textElement = PageElement(kind: .text, text: "") }.disabled(session.isReadOnly)
@@ -315,9 +321,19 @@ struct EditorScreen: View {
                     Button("Edit \(ShapeElementSheet.title(item.kind))") { shapeElement = item }.disabled(session.isReadOnly)
                 }
             }
-        } label: { Label("Notebook actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
+        } label: {
+            // Menu ignores ButtonStyle on iPadOS 16, so give the glyph its own 44pt hit area.
+            Label("Notebook actions", systemImage: "ellipsis").labelStyle(.iconOnly)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
             .accessibilityIdentifier("editor.actions")
             .sheet(isPresented: $diagnosticsShown) { DiagnosticsScreen() }
+    }
+    // ponytail: current page only; new pages inherit it via quickAddPage. Add "apply to all" if asked.
+    private func setTemplate(_ template: PageTemplate) {
+        guard !session.isReadOnly, var page = session.page, page.template != template else { return }
+        page.template = template; page.pdfIndex = nil
+        Task { await session.refresh(page); _ = await store.flush() }
     }
     @discardableResult private func quickAddPage(before: Bool = false) async -> Bool {
         guard !session.isReadOnly, !session.busy, await session.flush(), let current = session.page,

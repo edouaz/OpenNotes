@@ -36,21 +36,39 @@ extension InkStroke {
 extension EditorSession {
     func attachingInk(_ replacement: InkDrawing) -> InkDrawing {
         let existing = Set(drawing.strokes.map(\.id))
-        let notes = (page?.elements ?? []).enumerated().sorted {
-            ($0.element.zIndex ?? Double($0.offset)) < ($1.element.zIndex ?? Double($1.offset))
-        }.map(\.element).filter { $0.kind == .stickyNote && $0.collapsed != true && $0.isLocked != true }
+        let notes = Self.inkOwners(page?.elements ?? [])
         return InkDrawing(strokes: replacement.strokes.map { source in
-            guard !existing.contains(source.id), source.parentID == nil, let first = source.path.first else { return source }
+            guard !existing.contains(source.id), source.parentID == nil else { return source }
             var stroke = source
-            for note in notes.reversed() {
-                let point = first.location.applying(source.transform)
-                if note.visiblePath.contains(point) {
-                    stroke.parentID = note.id
-                    break
-                }
-            }
+            stroke.parentID = Self.owner(of: source, among: notes)
             return stroke
         })
+    }
+
+    /// After a lasso move or transform, moved ink is re-homed with the drawing rule, so ink dragged onto a note
+    /// joins it and ink dragged off leaves it (otherwise it is clipped away and looks deleted). Ink whose note
+    /// moved with it keeps that note.
+    func reattachingMovedInk(_ strokes: [InkStroke], moved: Set<UUID>, elements: [PageElement], movedElements: Set<UUID>) -> [InkStroke] {
+        strokes.map { source in
+            guard moved.contains(source.id), source.parentID.map({ !movedElements.contains($0) }) ?? true else { return source }
+            var stroke = source
+            // Its current note stays a candidate even when locked, so a locked note never loses ink it already holds.
+            stroke.parentID = Self.owner(of: source, among: Self.inkOwners(elements, keeping: source.parentID))
+            return stroke
+        }
+    }
+
+    /// Open, unlocked notes, bottom to top.
+    private static func inkOwners(_ elements: [PageElement], keeping current: UUID? = nil) -> [PageElement] {
+        elements.enumerated().sorted {
+            ($0.element.zIndex ?? Double($0.offset)) < ($1.element.zIndex ?? Double($1.offset))
+        }.map(\.element).filter { $0.kind == .stickyNote && $0.collapsed != true && ($0.isLocked != true || $0.id == current) }
+    }
+    /// The topmost note under the stroke's first sample.
+    private static func owner(of stroke: InkStroke, among notes: [PageElement]) -> UUID? {
+        guard let first = stroke.path.first else { return stroke.parentID }
+        let point = first.location.applying(stroke.transform)
+        return notes.last { $0.visiblePath.contains(point) }?.id
     }
 
     func reconcileStickyInk(_ replacement: InkDrawing, previous: [PageElement], updated: [PageElement]) -> InkDrawing {

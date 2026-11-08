@@ -202,6 +202,25 @@ final class EraserGeometryTests: XCTestCase {
         XCTAssertLessThan(mismatches, checked / 500, "\(mismatches)/\(checked)")
         XCTAssertFalse(local.contains(CGPoint(x: 162, y: 70)))
     }
+    func testRepeatedPrecisionOnAnEditedOutlineMatchesFullBooleanAndKeepsHoles() throws {
+        var stroke = PerformanceTests.stroke(samples: 400, origin: CGPoint(x: 20, y: 60), seed: 3, step: 1, width: 20)
+        // An outline with a real hole, as a full boolean leaves it: punch a small hole well inside the body.
+        let center = try XCTUnwrap(stroke.path.controlPoints.dropFirst(100).first).location
+        let hole = CGPath(ellipseIn: CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6), transform: nil)
+        stroke.vectorOutline = InkVectorPath(stroke.paintedPath.subtracting(hole))
+        XCTAssertFalse(stroke.paintedPath.contains(center))
+        let target = try XCTUnwrap(stroke.path.controlPoints.dropFirst(300).first).location
+        let erased = try XCTUnwrap(EraserEditing.erase(InkDrawing(strokes: [stroke]), along: [target], width: 10, mode: .precision).strokes.first)
+        let full = stroke.paintedPath.subtracting(CGPath(ellipseIn: CGRect(x: target.x - 5, y: target.y - 5, width: 10, height: 10), transform: nil))
+        var mismatches = 0, checked = 0
+        for x in stride(from: CGFloat(0), to: 450, by: 1.7) { for y in stride(from: CGFloat(0), to: 130, by: 1.7) {
+            let point = CGPoint(x: x, y: y); checked += 1
+            if erased.paintedPath.contains(point) != full.contains(point) { mismatches += 1 }
+        } }
+        XCTAssertLessThan(mismatches, checked / 500, "\(mismatches)/\(checked)")
+        XCTAssertFalse(erased.paintedPath.contains(center), "The far hole is not filled back")
+        XCTAssertFalse(erased.paintedPath.contains(target))
+    }
     // Lasso containment: the distance test brackets the CGPath intersection it replaces (and agrees on clear cases).
     func testLassoProximityBracketsPathIntersection() {
         var seed: UInt64 = 11

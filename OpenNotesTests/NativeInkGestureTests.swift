@@ -308,6 +308,33 @@ final class EditorInputRulesTests: XCTestCase {
         editor.selectionIDs = nil
         XCTAssertEqual(editor.selectionSnapshot(try XCTUnwrap(editor.page), path: over).strokeIDs.count, 2, "Without an identity the outline decides")
     }
+    func testInkMovedAcrossANoteEdgeChangesOwner() async throws {
+        let note = PageElement(kind: .stickyNote, x: 400, y: 400, width: 200, height: 200)
+        let page = stroke(CGPoint(x: 100, y: 100), CGPoint(x: 140, y: 100))
+        let child = stroke(CGPoint(x: 450, y: 450), CGPoint(x: 490, y: 450), parent: note.id)
+        let editor = session(elements: [note], drawing: InkDrawing(strokes: [page, child]))
+        var settings = editor.toolSettings; settings.includeStickyNotes = false; editor.toolSettings = settings
+        let onto = UIBezierPath(rect: CGRect(x: 90, y: 90, width: 60, height: 20))
+        let ok1 = await editor.moveSelection(inside: onto, by: CGPoint(x: 350, y: 400), durable: false)
+        XCTAssertTrue(ok1)
+        XCTAssertEqual(editor.canvas.drawing.strokes.first { $0.id == page.id }?.parentID, note.id, "Page ink dropped on a note joins it")
+        let off = UIBezierPath(rect: CGRect(x: 440, y: 440, width: 60, height: 20))
+        editor.selectionIDs = SelectionIdentity(strokeIDs: [child.id], elementIDs: [])
+        let ok2 = await editor.moveSelection(inside: off, by: CGPoint(x: -300, y: 200), durable: false)
+        XCTAssertTrue(ok2)
+        XCTAssertNil(editor.canvas.drawing.strokes.first { $0.id == child.id }?.parentID, "Note ink dragged off returns to the page")
+        XCTAssertEqual(editor.canvas.drawing.visible(on: try XCTUnwrap(editor.page)).strokes.count, 2, "Nothing is clipped away")
+    }
+    func testScalingNearTheEdgeKeepsInkOnThePage() async throws {
+        let edge = stroke(CGPoint(x: 700, y: 500), CGPoint(x: 780, y: 500))
+        let editor = session(drawing: InkDrawing(strokes: [edge]))
+        let lasso = UIBezierPath(rect: CGRect(x: 690, y: 490, width: 100, height: 20))
+        let ok3 = await editor.affineSelection(inside: lasso, scale: 3, rotation: 0, durable: false)
+        XCTAssertTrue(ok3)
+        let bounds = try XCTUnwrap(editor.canvas.drawing.strokes.first).renderBounds
+        XCTAssertLessThanOrEqual(bounds.maxX, PageRenderer.size(try XCTUnwrap(editor.page)).width + 0.5)
+        XCTAssertGreaterThan(bounds.width, 200, "Scaled, then slid back rather than rejected")
+    }
     func testTapSelectsOnlyTheTappedStroke() throws {
         let diagonal = stroke(CGPoint(x: 100, y: 300), CGPoint(x: 300, y: 500)), neighbour = stroke(CGPoint(x: 280, y: 320), CGPoint(x: 290, y: 330))
         let editor = session(drawing: InkDrawing(strokes: [diagonal, neighbour]))
