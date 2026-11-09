@@ -41,6 +41,7 @@
 			<dict>
 				<key>public.filename-extension</key>
 				<array>
+					<string>opennote</string>
 					<string>catnote</string>
 				</array>
 			</dict>

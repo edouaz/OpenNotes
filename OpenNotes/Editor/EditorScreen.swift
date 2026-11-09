@@ -455,7 +455,7 @@ struct EditorScreen: View {
                 Stepper("From page \(first)", value: $first, in: 1...max(1, pages.count))
                 Stepper("To page \(last)", value: $last, in: first...max(first, pages.count))
                 Button("Export annotated PDF") { Task { await export(native: false) } }.disabled(exporting)
-                Button("Back up native notebook (.catnote)") { Task { await export(native: true) } }.disabled(exporting)
+                Button("Back up native notebook (.opennote)") { Task { await export(native: true) } }.disabled(exporting)
                 Text("Sharing lets you save to Files and its configured providers.").font(.caption)
             }.navigationTitle("Export").toolbar { Button("Cancel") { exportShown = false }.disabled(exporting) }
         }
@@ -469,7 +469,7 @@ struct EditorScreen: View {
         do {
             let selectedRange = (first - 1)...(max(first, last) - 1)
             let archive = try await store.archive(noteID, indices: native ? nil : selectedRange)
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + (native ? ".catnote" : ".pdf"))
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + (native ? ".opennote" : ".pdf"))
             let range = 0...(archive.pages.count - 1)
             try await Task.detached(priority: .userInitiated) {
                 if native { try JSONEncoder().encode(archive).write(to: url, options: .atomic) }

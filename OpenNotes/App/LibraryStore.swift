@@ -221,7 +221,7 @@ final class LibraryStore: ObservableObject {
         do {
             let data = try await Task.detached { try Data(contentsOf: url, options: .mappedIfSafe) }.value
             guard data.count <= 150_000_000 else { throw CocoaError(.fileReadTooLarge) }
-            if url.pathExtension.lowercased() == "catnote" {
+            if ["opennote", "catnote"].contains(url.pathExtension.lowercased()) {   // .catnote: backups from earlier builds
                 let archive = try await Task.detached(priority: .userInitiated) { try JSONDecoder().decode(NotebookArchive.self, from: data) }.value
                 return try await importArchive(archive, folderID: folderID)
             }

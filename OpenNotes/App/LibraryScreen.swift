@@ -147,7 +147,7 @@ struct LibraryScreen: View {
             .onChange(of: scenePhase) { phase in if phase == .active { Task { await consumeInbox() } } }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in Task { await store.disk.clearThumbnails() } }
             .onOpenURL { url in Task { if let id = await store.importFile(url, folderID: currentFolderID) { openNotebook(id) } } }
-            .fileImporter(isPresented: $importer, allowedContentTypes: [.pdf, .image, UTType(filenameExtension: "catnote") ?? .data]) { result in
+            .fileImporter(isPresented: $importer, allowedContentTypes: [.pdf, .image, UTType(filenameExtension: "opennote") ?? .data, UTType(filenameExtension: "catnote") ?? .data]) { result in
                 Task {
                     do { if let id = await store.importFile(try result.get(), folderID: currentFolderID) { openNotebook(id) } }
                     catch { store.error = error.localizedDescription }
@@ -310,9 +310,10 @@ struct LibraryScreen: View {
         HStack {
             Button { selectedFolderID = folder.id } label: {
                 Label(folder.name, systemImage: "folder.fill").frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                    .contentShape(Rectangle())   // the empty middle of the row opens the folder too
             }.buttonStyle(.plain).accessibilityIdentifier("library.folder.\(folder.id.uuidString)")
             Menu { folderActions(folder) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("Actions for \(folder.name)")
-        }.padding(.horizontal, 14).background(OpenNotesStyle.chrome, in: RoundedRectangle(cornerRadius: 12))
+        }.padding(.horizontal, 14).background(OpenNotesStyle.chrome, in: RoundedRectangle(cornerRadius: 12)).contextMenu { folderActions(folder) }
     }
     private func noteRow(_ note: NoteDocument) -> some View {
         HStack(spacing: 12) {
