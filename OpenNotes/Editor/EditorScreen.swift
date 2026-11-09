@@ -41,11 +41,9 @@ struct EditorScreen: View {
     // Not observed: the session publishes this notebook's pages, title and store errors.
     let store: LibraryStore
     let noteID: UUID
-    var returnToLibrary: (() -> Void)?
     @State private var renameShown = false
     @State private var notebookTitle = ""
-    init(store: LibraryStore, noteID: UUID, session: EditorSession? = nil, returnToLibrary: (() -> Void)? = nil) {
-        self.returnToLibrary = returnToLibrary
+    init(store: LibraryStore, noteID: UUID, session: EditorSession? = nil) {
         self.store = store; self.noteID = noteID
         _session = StateObject(wrappedValue: session ?? EditorSession(store: store, noteID: noteID))
     }
@@ -210,11 +208,6 @@ struct EditorScreen: View {
     }
     private var quickActions: some View {
         HStack(spacing: 4) {
-            Button {
-                if let returnToLibrary { returnToLibrary() }
-                else { Task { if await session.flush() { dismiss() } } }
-            } label: { Label("Library", systemImage: "chevron.left") }
-                .accessibilityIdentifier("workspace.library")
             Button { pagesShown.toggle(); Task { await session.flush() } } label: {
                 HStack(spacing: 6) { Image(systemName: "sidebar.left"); Text("\(currentIndex + 1)/\(pages.count)").font(.caption).monospacedDigit() }
             }
@@ -232,8 +225,7 @@ struct EditorScreen: View {
                 }
             } label: { Label(session.isReadOnly ? "Enable editing" : "Read only", systemImage: session.isReadOnly ? "lock.fill" : "pencil.line") }
                 .accessibilityIdentifier("editor.readOnly").accessibilityAddTraits(session.isReadOnly ? .isSelected : [])
-            Text(session.title)
-                .font(.headline).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 0)   // the notebook's name is already on its tab
             Button { Task { await quickAddPage() } } label: {
                 Label("Add page", systemImage: "doc.badge.plus")
             }.disabled(session.busy || session.isReadOnly).accessibilityIdentifier("editor.addPage")

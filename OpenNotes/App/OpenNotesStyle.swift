@@ -13,8 +13,11 @@ enum OpenNotesStyle {
     static let controlSize: CGFloat = 44
     static let cornerRadius: CGFloat = 14
 
-    static func notebookTabWidth(availableWidth: CGFloat, count: Int) -> CGFloat {
+    /// Tabs share the row equally (1 = full, 2 = halves … 4 = quarters); past four they keep a
+    /// quarter of the row (never under 140pt) and the row scrolls. `spacing` follows each tab.
+    static func notebookTabWidth(availableWidth: CGFloat, count: Int, spacing: CGFloat = 0) -> CGFloat {
         guard count > 0, availableWidth > 0 else { return 0 }
-        return min(240, availableWidth)
+        let shared = availableWidth / CGFloat(max(2, min(count, 4))) - spacing   // a lone tab takes half the row
+        return max(min(140, availableWidth - spacing), shared)
     }
 }
