@@ -163,13 +163,14 @@ final class CloudSync: ObservableObject {
                 if UIApplication.shared.applicationState == .active { await self?.sync() }
                 // Exponential backoff on repeated failures: 30s, 60s, ... capped at 10 min. Network return and saves still sync immediately.
                 if let phase = self?.phase { failures = (phase == .failed || phase == .offline) ? min(failures + 1, 5) : 0 }
-                do { try await Task.sleep(nanoseconds: UInt64(min(30 << max(failures - 1, 0), 600)) * 1_000_000_000) } catch { break }
+                let base = AppPreferences.batterySaver ? 120 : 30
+                do { try await Task.sleep(nanoseconds: UInt64(min(base << max(failures - 1, 0), 600)) * 1_000_000_000) } catch { break }
             }
         }
     }
     func localChangesWillSave() {
         generation += 1; pendingSaves += 1
-        if configured && enabled && libraryLinked && !needsSignIn { phase = .pending; status = "Changes waiting to sync" }
+        if configured && enabled && libraryLinked && !needsSignIn && (phase != .pending || status != "Changes waiting to sync") { phase = .pending; status = "Changes waiting to sync" }
     }
     func localChangesDidSave() {
         pendingSaves = max(0, pendingSaves - 1); saveFailed = false
@@ -182,10 +183,11 @@ final class CloudSync: ObservableObject {
     func syncSoon() {
         guard configured, enabled, libraryLinked, !needsSignIn, stateError == nil else { return }
         syncRequested = true
-        if !running && !saveFailed { phase = .pending; status = "Changes waiting to sync" }
+        if !running && !saveFailed && (phase != .pending || status != "Changes waiting to sync") { phase = .pending; status = "Changes waiting to sync" }
         scheduledSync?.cancel()
         scheduledSync = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            // Coalesce a burst of saves into one sync; each sync re-reads and checksums edited notebooks.
+            do { try await Task.sleep(nanoseconds: UInt64(AppPreferences.syncDelay * 1_000_000_000)) } catch { return }
             guard let self else { return }
             self.scheduledSync = nil
             await self.sync()
@@ -437,6 +439,7 @@ final class CloudSync: ObservableObject {
                 // One failing notebook (too large, stale head, bad archive) must not block the others.
                 do {
                     guard await store.flushEditors(for: note.id) else { skipped = true; continue }
+                    if let current = store.library.note(id: note.id), unchangedSinceSync(current) { continue }
                     let archive = try await store.archive(note.id)
                     let (data, checksum) = try await Task.detached(priority: .utility) {
                         // Never publish ink another device cannot decode: fail here, on the device that owns the data.
@@ -475,6 +478,7 @@ final class CloudSync: ObservableObject {
             // Recheck editors after network awaits so newly staged work is never reported as synced.
             for note in store.library.notes where !conflicts.contains(where: { $0.localID == note.id || $0.remoteCopyID == note.id }) {
                 guard await store.flushEditors(for: note.id) else { skipped = true; continue }
+                if let current = store.library.note(id: note.id), unchangedSinceSync(current) { continue }
                 let archive = try await store.archive(note.id)
                 let checksum = try await Task.detached(priority: .utility) { Self.checksum(try Self.encode(archive)) }.value
                 if state.links[note.id.uuidString]?.checksum != checksum { skipped = true }
@@ -526,6 +530,12 @@ final class CloudSync: ObservableObject {
         }
         let path = context.codingPath.map(\.stringValue).joined(separator: ".")
         return "\(stage): \(detail)\(path.isEmpty ? "" : " at " + path). Update OpenNotes on both devices and retry."
+    }
+    /// Same edit time as the last synced revision and a known checksum: re-encoding and hashing it would only burn CPU.
+    /// ponytail: trusts note.updatedAt; a change that skips LibraryStore.update (e.g. background PDF text indexing) waits for the next edit.
+    private func unchangedSinceSync(_ note: NoteDocument) -> Bool {
+        guard let link = state.links[note.id.uuidString] else { return false }
+        return !link.checksum.isEmpty && link.modifiedAt == note.updatedAt
     }
     enum NotebookSyncState: Equatable { case synced, pending, failed(String), conflict }
     func notebookState(_ note: NoteDocument) -> NotebookSyncState {
