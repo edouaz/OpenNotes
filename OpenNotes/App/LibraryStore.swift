@@ -65,7 +65,7 @@ final class LibraryStore: ObservableObject {
         saveGeneration += 1
         let generation = saveGeneration
         let previous = saveTask
-        saving = true
+        if !saving { saving = true }   // each publish re-renders every view observing the store
         saveTask = Task {
             await previous?.value
             do { try await disk.save(snapshot); self.saveFailed = false; cloud.localChangesDidSave(); Diagnostics.shared.record("library.save.ok", ["generation": String(generation)]) }

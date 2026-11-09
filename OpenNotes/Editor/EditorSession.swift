@@ -223,7 +223,13 @@ final class EditorSession: ObservableObject {
         restoreInstrument()
         if let index = toolSettings.selectedStrokePresets?[selectedTool.rawValue] { selectStrokePreset(index) }
         canvas.tool = tool
-        store.$library.map { $0.pages(in: noteID) }.removeDuplicates().assign(to: &$pages)
+        // Every autosave and edit rewrites the current page (revision, ink file): republishing `pages` each time
+        // re-rendered the whole editor mid-gesture. Adding, removing or reordering pages shows at once; content-only
+        // changes (thumbnails) follow once edits pause.
+        let notebookPages = store.$library.map { $0.pages(in: noteID) }.removeDuplicates()
+        notebookPages.removeDuplicates { $0.map(\.id) == $1.map(\.id) }
+            .merge(with: notebookPages.debounce(for: .seconds(1.5), scheduler: RunLoop.main))
+            .removeDuplicates().assign(to: &$pages)
         store.$library.map { $0.note(id: noteID)?.title ?? "Notebook" }.removeDuplicates().assign(to: &$title)
         store.$error.removeDuplicates().assign(to: &$storeError)
         store.register(self)
@@ -313,11 +319,23 @@ final class EditorSession: ObservableObject {
         self.drawing = drawing
         if !dirty { dirty = true; Diagnostics.shared.record("ink.dirty", ["page": page.id.uuidString, "strokes": String(drawing.strokes.count)]) }
         pending[page.id] = (page, drawing, UUID())
+        scheduleAutosave()
+    }
+    /// Writes after a pause in editing, and never in the middle of a stroke, drag, scroll or zoom:
+    /// a save landing mid-gesture was the main cause of dropped frames on older iPads.
+    private func scheduleAutosave(after requested: UInt64? = nil) {
+        let delay = requested ?? UInt64(AppPreferences.autosaveDelay * 1_000_000_000)
         autosave?.cancel()
-        autosave = Task {
-            do { try await Task.sleep(nanoseconds: 700_000_000) } catch { return }
-            _ = await flush()
+        autosave = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: delay) } catch { return }
+            guard let self else { return }
+            if self.interacting { self.scheduleAutosave(after: 500_000_000); return }
+            _ = await self.flush()
         }
+    }
+    private var interacting: Bool {
+        canvas.hasActiveStroke || canvas.isTracking || canvas.isDragging || canvas.isDecelerating || canvas.isZooming ||
+            cloudInputViews.contains { ($0 as? PageScrollView)?.isManipulating == true }
     }
     @discardableResult func flush() async -> Bool {
         commitStickyEdits()

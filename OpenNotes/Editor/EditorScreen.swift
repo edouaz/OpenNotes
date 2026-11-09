@@ -77,7 +77,8 @@ struct EditorScreen: View {
             .sheet(isPresented: Binding(get: { pagesShown && geometry.size.width < 700 }, set: { pagesShown = $0 })) { pageList }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: pagesShown)
         }
-        .overlay(alignment: .topTrailing) { if session.busy { ProgressView().padding(12).allowsHitTesting(false) } }
+        // Bottom corner, clear of the toolbar menus; it only appears when the work lasts long enough to notice.
+        .overlay(alignment: .bottomTrailing) { ActivityIndicator(store: store, loading: session.busy).allowsHitTesting(false) }
         .overlay(alignment: .bottom) {
             if copyConfirmation {
                 Label("Screenshot copied", systemImage: "checkmark.circle.fill")
@@ -505,5 +506,30 @@ private struct ToolButtonStyle: ButtonStyle {
         configuration.label.frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             .background(configuration.isPressed ? Color.primary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.35)
+    }
+}
+
+/// A small, late-appearing status pill: quick saves and page loads never flash it.
+private struct ActivityIndicator: View {
+    @ObservedObject var store: LibraryStore
+    let loading: Bool
+    @State private var shown = false
+    private var label: String? { store.saving ? "Saving" : loading ? "Loading" : nil }
+    var body: some View {
+        Group {
+            if shown, let label {
+                HStack(spacing: 6) { ProgressView().controlSize(.mini); Text(label).font(.caption2) }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.thinMaterial, in: Capsule())
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .accessibilityElement(children: .combine)
+            }
+        }
+        .task(id: label) {
+            guard label != nil else { shown = false; return }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if !Task.isCancelled { shown = true }
+        }
     }
 }

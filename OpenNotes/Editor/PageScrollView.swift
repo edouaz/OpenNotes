@@ -10,6 +10,13 @@ final class PageScrollView: UIView {
         let gestures = selectionView.activeGestures + selectionView.subviews.flatMap { $0.gestureRecognizers ?? [] }
         return gestures.contains { $0.state == .began || $0.state == .changed }
     }
+    /// A drag, resize, lasso or page turn is in progress: background saving waits for it to finish.
+    var isManipulating: Bool {
+        if noteMovePreview != nil || selectionPreview != nil || pageTurn.committing { return true }
+        let gestures = (selectionView?.activeGestures ?? []) + imageViews.flatMap { [$0] + $0.subviews }.flatMap { $0.gestureRecognizers ?? [] }
+            + [pageTurn.gesture, zoomGesture, noteBodyPan]
+        return gestures.contains { $0.state == .began || $0.state == .changed }
+    }
     let canvas: InkCanvasView
     let paper = TiledPaperView()
     var imageViews: [ImageHandlesView] = []
