@@ -13,19 +13,65 @@ enum DocumentClipboard {
         return filtered
     }
     static func selectedElements(_ page: NotePage, inside path: UIBezierPath, settings: EditorToolSettings) -> [PageElement] {
-        return (filteredPage(page, settings: settings).elements ?? []).filter { item in
-            guard item.kind != .highlight else { return false }
-            return item.visibleBounds.intersects(path.bounds) && path.cgPath.intersects(item.visiblePath, using: path.usesEvenOddFillRule ? .evenOdd : .winding)
+        let ordered = (page.elements ?? []).enumerated().sorted {
+            ($0.element.zIndex ?? Double($0.offset)) < ($1.element.zIndex ?? Double($1.offset))
+        }.map(\.element)
+        let candidates = Set((filteredPage(page, settings: settings).elements ?? []).map(\.id))
+        let hidden = page.collapsedContentParents
+        return ordered.enumerated().compactMap { index, item in
+            guard candidates.contains(item.id), item.kind != .highlight, item.parentID.map({ !hidden.contains($0) }) != false, item.visibleBounds.intersects(path.bounds) else { return nil }
+            var visible = item.visiblePath.intersection(path.cgPath)
+            for cover in ordered.dropFirst(index + 1) where cover.kind == .stickyNote {
+                visible = visible.subtracting(cover.visiblePath)
+            }
+            return visible.isEmpty ? nil : item
         }
     }
+
     static func selectedInk(_ drawing: InkDrawing, inside path: UIBezierPath) -> InkDrawing {
         InkDrawing(strokes: drawing.strokes.filter { contains($0, inside: path) })
     }
     static func contains(_ stroke: InkStroke, inside path: UIBezierPath) -> Bool {
+        contains(stroke, inside: path, edges: edges(of: path.cgPath))
+    }
+    /// `edges`: the lasso's `edges(of:)`, computed once by callers testing many strokes.
+    static func contains(_ stroke: InkStroke, inside path: UIBezierPath, edges: [(CGPoint, CGPoint)]) -> Bool {
         guard stroke.renderBounds.intersects(path.bounds) else { return false }
-        var transform = stroke.transform
-        guard let painted = stroke.paintedPath.copy(using: &transform) else { return false }
-        return painted.intersects(path.cgPath, using: path.usesEvenOddFillRule ? .evenOdd : .winding)
+        // Plain strokes: linear distance test against the lasso edges (CGPath booleans are superlinear in samples).
+        if stroke.vectorOutline == nil {
+            let rule: CGPathFillRule = path.usesEvenOddFillRule ? .evenOdd : .winding
+            let outline = path.cgPath
+            return EraserEditing.touches(stroke, segments: edges, reach: 0) { outline.contains($0, using: rule) }
+        }
+        // Test in stroke space: transforming the lasso is far cheaper than copying the stroke's whole path.
+        var inverse = stroke.transform.inverted()
+        guard let local = path.cgPath.copy(using: &inverse) else { return false }
+        return stroke.paintedPath.intersects(local, using: path.usesEvenOddFillRule ? .evenOdd : .winding)
+    }
+    // Closed polyline of every subpath; curves are flattened (lassos are polylines, so this is a safety net).
+    static func edges(of path: CGPath) -> [(CGPoint, CGPoint)] {
+        var result: [(CGPoint, CGPoint)] = [], start = CGPoint.zero, current = CGPoint.zero
+        func line(to p: CGPoint) { result.append((current, p)); current = p }
+        func close() { if current != start { line(to: start) } }
+        path.applyWithBlock { element in
+            let p = element.pointee.points
+            switch element.pointee.type {
+            case .moveToPoint: close(); start = p[0]; current = p[0]
+            case .addLineToPoint: line(to: p[0])
+            case .addQuadCurveToPoint:
+                let a = current
+                for i in 1...8 { let u = CGFloat(i) / 8, v = 1 - u; line(to: CGPoint(x: v * v * a.x + 2 * u * v * p[0].x + u * u * p[1].x, y: v * v * a.y + 2 * u * v * p[0].y + u * u * p[1].y)) }
+            case .addCurveToPoint:
+                let a = current
+                for i in 1...8 { let u = CGFloat(i) / 8, v = 1 - u
+                    line(to: CGPoint(x: v * v * v * a.x + 3 * v * v * u * p[0].x + 3 * v * u * u * p[1].x + u * u * u * p[2].x,
+                                     y: v * v * v * a.y + 3 * v * v * u * p[0].y + 3 * v * u * u * p[1].y + u * u * u * p[2].y)) }
+            case .closeSubpath: close()
+            @unknown default: break
+            }
+        }
+        close()
+        return result.isEmpty ? [(current, current)] : result
     }
     static func copyInk(_ drawing: InkDrawing) throws {
         guard !drawing.strokes.isEmpty else { throw CocoaError(.validationMissingMandatoryProperty) }
@@ -33,7 +79,8 @@ enum DocumentClipboard {
         guard data.count <= maximumBytes else { throw CocoaError(.fileWriteOutOfSpace) }
         UIPasteboard.general.setItems([[inkType: data]], options: [.localOnly: true])
     }
-    static func decodeInk(_ data: Data, at point: CGPoint, pageSize: CGSize) throws -> InkDrawing {
+    /// `centered`: the point is where a finger landed, so the content is centred on it instead of hanging from it.
+    static func decodeInk(_ data: Data, at point: CGPoint, pageSize: CGSize, centered: Bool = false) throws -> InkDrawing {
         guard data.count <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }
         let drawing = try InkDrawing(data: data)
         let bounds = drawing.bounds
@@ -41,8 +88,8 @@ enum DocumentClipboard {
               bounds.width.isFinite, bounds.height.isFinite, bounds.minX.isFinite, bounds.minY.isFinite,
               bounds.width > 0, bounds.height > 0, pageSize.width > 0, pageSize.height > 0 else { throw CocoaError(.fileReadCorruptFile) }
         let scale = min(1, pageSize.width / bounds.width, pageSize.height / bounds.height)
-        let x = min(max(0, point.x), max(0, pageSize.width - bounds.width * scale))
-        let y = min(max(0, point.y), max(0, pageSize.height - bounds.height * scale))
+        let x = min(max(0, point.x - (centered ? bounds.width * scale / 2 : 0)), max(0, pageSize.width - bounds.width * scale))
+        let y = min(max(0, point.y - (centered ? bounds.height * scale / 2 : 0)), max(0, pageSize.height - bounds.height * scale))
         var pasted = drawing.transformed(using: CGAffineTransform(a: scale, b: 0, c: 0, d: scale, tx: x - bounds.minX * scale, ty: y - bounds.minY * scale))
         for index in pasted.strokes.indices { pasted.strokes[index].id = UUID() }
         return pasted
@@ -58,7 +105,9 @@ extension DocumentClipboard {
         var resources: [String: Data]
     }
     static func payload(page: NotePage, drawing: InkDrawing, path: UIBezierPath, settings: EditorToolSettings, resources: [String: Data]) throws -> Payload {
-        let selected = SelectionMoveSnapshot(page: page, drawing: drawing, path: path, settings: settings)
+        try payload(SelectionMoveSnapshot(page: page, drawing: drawing, path: path, settings: settings), resources: resources)
+    }
+    static func payload(_ selected: SelectionMoveSnapshot, resources: [String: Data]) throws -> Payload {
         guard !selected.isEmpty else { throw CocoaError(.validationMissingMandatoryProperty) }
         let names = Set(selected.elements.compactMap(\.resource))
         guard names.allSatisfy({ resources[$0] != nil }) else { throw CocoaError(.fileNoSuchFile) }
@@ -76,7 +125,7 @@ extension DocumentClipboard {
         guard data.count <= maximumBytes else { throw CocoaError(.fileWriteOutOfSpace) }
         return data
     }
-    static func decode(_ data: Data, on page: NotePage, at point: CGPoint) throws -> (InkDrawing, [PageElement], [String: Data]) {
+    static func decode(_ data: Data, on page: NotePage, at point: CGPoint, centered: Bool = false) throws -> (InkDrawing, [PageElement], [String: Data]) {
         guard data.count <= maximumBytes, point.x.isFinite, point.y.isFinite else { throw CocoaError(.fileReadTooLarge) }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
         guard payload.version == 1, payload.elements.count <= 10_000,
@@ -90,8 +139,8 @@ extension DocumentClipboard {
         guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { throw CocoaError(.fileReadCorruptFile) }
         let size = PageRenderer.size(page)
         let scale = min(1, size.width / bounds.width, size.height / bounds.height)
-        let x = min(max(0, point.x), max(0, size.width - bounds.width * scale))
-        let y = min(max(0, point.y), max(0, size.height - bounds.height * scale))
+        let x = min(max(0, point.x - (centered ? bounds.width * scale / 2 : 0)), max(0, size.width - bounds.width * scale))
+        let y = min(max(0, point.y - (centered ? bounds.height * scale / 2 : 0)), max(0, size.height - bounds.height * scale))
         let transform = CGAffineTransform(a: scale, b: 0, c: 0, d: scale, tx: x - bounds.minX * scale, ty: y - bounds.minY * scale)
         var ids: [UUID: UUID] = [:]
         for item in payload.elements { ids[item.id] = UUID() }

@@ -7,6 +7,7 @@ struct NoteDocument: Identifiable, Codable, Equatable, Sendable {
     var title: String
     var favorite: Bool?
     var deletedAt: Date?
+    var purgedAt: Date?
     var colorHex: String?
     var pageIDs: [UUID]
     var createdAt: Date

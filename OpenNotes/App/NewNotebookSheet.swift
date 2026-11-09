@@ -6,8 +6,8 @@ struct NewNotebookSheet: View {
     let created: (UUID) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
-    @State private var template = PageTemplate.ruled
-    @State private var landscape = false
+    @State private var template = AppPreferences.defaultTemplate
+    @State private var landscape = AppPreferences.defaultLandscape
     @State private var cover = Color.blue
     @State private var saving = false
     var body: some View {
@@ -39,12 +39,11 @@ struct NewNotebookSheet: View {
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = await store.create(title: name.isEmpty ? "New notebook" : name, folderID: folderID) else { return }
         store.update(id) { $0.colorHex = UIColor(cover).presetHex }
+        // The last choice becomes the default page style.
+        UserDefaults.standard.set(template.rawValue, forKey: "defaultPageTemplate")
+        UserDefaults.standard.set(landscape, forKey: "defaultLandscape")
         if var page = store.library.firstPage(in: id) {
-            page.template = template
-            if landscape {
-                let size = PageRenderer.size(page)
-                page.width = size.height; page.height = size.width
-            }
+            AppPreferences.applyDefaultStyle(to: &page)
             store.updatePage(page)
         }
         guard await store.flush() else { return }

@@ -51,3 +51,7 @@ The product, Xcode project, module and source directories are OpenNotes. A small
 - Native document type/extension and clipboard interoperability identifiers.
 
 These are compatibility keys, not displayed branding. Keep them stable when shipping an update to an existing installation. New signing configurations must be consistent across the app, extension, entitlements and developer account.
+
+## Portable-core direction
+
+See the [hybrid architecture audit](HYBRID_ARCHITECTURE_AUDIT.md) for component classifications and migration gates. Shape recognition math is independent of UIKit/editor state; run its existing contract tests with `sh scripts/test-shape-recognition.sh` on macOS. Rust adoption is deferred until profiling or a second client justifies it.

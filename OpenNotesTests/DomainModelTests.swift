@@ -356,4 +356,28 @@ final class DomainModelTests: XCTestCase {
             XCTAssertEqual(error as? LibraryMutationError, .invalidFolderMove(root.id, grandchild.id))
         }
     }
+
+    func testLegacyHomeFolderMergesIntoTheSharedHome() {
+        var legacy = NotebookFolder(name: "Home")
+        var work = NotebookFolder(name: "Work")
+        let homeNote = NoteDocument(folderID: legacy.id, title: "At home")
+        let workNote = NoteDocument(folderID: work.id, title: "At work")
+        legacy.noteIDs = [homeNote.id]; legacy.childFolderIDs = [work.id]; work.noteIDs = [workNote.id]
+        // The other device's home arrived through sync as an ordinary root folder.
+        var shared = NotebookFolder(id: NotebookFolder.homeID, name: "My notebooks")
+        let synced = NoteDocument(folderID: shared.id, title: "From the phone")
+        shared.noteIDs = [synced.id]
+        var library = NoteLibrarySnapshot(); library.folders = [legacy, work, shared]; library.notes = [homeNote, workNote, synced]
+        XCTAssertTrue(library.adoptSharedHomeFolder(now: Date(timeIntervalSince1970: 1)))
+        XCTAssertEqual(library.folders.first?.id, NotebookFolder.homeID)
+        XCTAssertEqual(Set(library.notes(in: NotebookFolder.homeID).map(\.id)), [homeNote.id, synced.id])
+        XCTAssertEqual(library.childFolders(of: NotebookFolder.homeID).map(\.id), [work.id])
+        XCTAssertEqual(library.notes.first { $0.id == homeNote.id }?.folderID, NotebookFolder.homeID)
+        XCTAssertNotNil(library.folder(id: legacy.id)?.deletedAt, "The emptied legacy home is trashed so other devices drop it")
+        XCTAssertFalse(library.rootFolders.contains { $0.id == legacy.id })
+        XCTAssertFalse(library.containsFolderCycle())
+        XCTAssertFalse(library.adoptSharedHomeFolder(), "Idempotent")
+        var fresh = NoteLibrarySnapshot(); fresh.folders = [NotebookFolder(id: NotebookFolder.homeID, name: "My notebooks")]
+        XCTAssertFalse(fresh.adoptSharedHomeFolder())
+    }
 }

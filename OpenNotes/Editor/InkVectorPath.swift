@@ -7,7 +7,21 @@ struct InkVectorPath: Codable, Equatable {
         var kind: Int
         var points: [CGPoint]
     }
-    var elements: [Element]
+    // Rebuilding (and re-validating) the CGPath on every access was the eraser's main repeated cost.
+    // Mutation installs a fresh box, so copies of the struct never see each other's stale path.
+    private final class Cache {
+        private let lock = NSLock()
+        private var path: CGPath?
+        func path(build: () -> CGPath) -> CGPath {
+            lock.lock(); defer { lock.unlock() }
+            if let path { return path }
+            let built = build(); path = built; return built
+        }
+    }
+    private var cache = Cache()
+    var elements: [Element] { didSet { cache = Cache() } }
+    private enum CodingKeys: String, CodingKey { case elements }
+    static func == (a: Self, b: Self) -> Bool { a.elements == b.elements }
     init(_ path: CGPath) {
         var result: [Element] = []
         path.applyWithBlock { pointer in
@@ -31,7 +45,8 @@ struct InkVectorPath: Codable, Equatable {
             $0.points.allSatisfy { $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }
         }
     }
-    var cgPath: CGPath {
+    var cgPath: CGPath { cache.path { build() } }
+    private func build() -> CGPath {
         let path = CGMutablePath()
         guard valid else { return path }
         for item in elements {

@@ -4,23 +4,35 @@ enum EraserEditing {
     static func erase(_ drawing: InkDrawing, along points: [CGPoint], width: Double, mode: EditorToolSettings.EraserMode, erasePen: Bool = true, eraseHighlighter: Bool = true) -> InkDrawing {
         guard !points.isEmpty, width.isFinite, width > 0,
               points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return drawing }
-        let radius = CGFloat(width / 2)
+        let effectiveWidth = width + (mode == .standard ? 4 : 0)
+        let radius = CGFloat(effectiveWidth / 2)
         let sweep = CGMutablePath()
         sweep.move(to: points[0])
         for point in points.dropFirst() { sweep.addLine(to: point) }
-        let area: CGPath = points.count == 1
-            ? CGPath(ellipseIn: CGRect(x: points[0].x - radius, y: points[0].y - radius, width: width, height: width), transform: nil)
-            : sweep.copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 1)
+        let area: CGPath = points.allSatisfy { $0 == points[0] }
+            ? CGPath(ellipseIn: CGRect(x: points[0].x - radius, y: points[0].y - radius, width: effectiveWidth, height: effectiveWidth), transform: nil)
+            : sweep.copy(strokingWithWidth: effectiveWidth, lineCap: .round, lineJoin: .round, miterLimit: 1)
         let strokes = drawing.strokes.flatMap { stroke -> [InkStroke] in
             guard stroke.isLocked != true else { return [stroke] }
             guard stroke.ink.inkType == .marker ? eraseHighlighter : erasePen else { return [stroke] }
             guard stroke.renderBounds.intersects(area.boundingBoxOfPath) else { return [stroke] }
-            var transform = stroke.transform
-            guard let paint = stroke.paintedPath.copy(using: &transform), paint.intersects(area) else { return [stroke] }
+            let transform = stroke.transform
+            let originalPaint = stroke.paintedPath
+            // Test in stroke space: transforming the small eraser area is far cheaper than copying the whole stroke path.
+            var inverse = transform.inverted()
+            guard let localArea = area.copy(using: &inverse) else { return [stroke] }
+            // Plain strokes are a union of dots and quads: a distance test is exact and linear, whereas CGPath
+            // booleans grow superlinearly with sample count. Edited strokes carry an outline and keep the path test.
+            let split = stroke.vectorOutline == nil ? nil : contours(of: originalPaint, near: localArea.boundingBoxOfPath)
+            let hit = split.map { !$0.near.isEmpty && $0.near.intersects(localArea) } ?? touches(stroke, along: points, reach: radius)
+            guard hit else { return [stroke] }
             if mode == .precision {
-                var inverse = transform.inverted()
-                guard let localArea = area.copy(using: &inverse) else { return [stroke] }
-                let remaining = stroke.paintedPath.subtracting(localArea)
+                // Only geometry around the eraser goes through the boolean, so cost follows the eraser, not the stroke.
+                // ponytail: untouched primitives stay raw, so a long edited stroke stores a bigger outline; compact off-main if files grow.
+                let remaining: CGPath
+                if let split {
+                    let kept = CGMutablePath(); kept.addPath(split.far); kept.addPath(split.near.subtracting(localArea)); remaining = kept
+                } else { remaining = paint(of: stroke, subtracting: localArea) }
                 guard !remaining.isEmpty else { return [] }
                 var clipped = stroke
                 clipped.vectorOutline = InkVectorPath(remaining)
@@ -29,7 +41,7 @@ enum EraserEditing {
             if mode == .stroke || (mode == .intelligent && max(stroke.renderBounds.width, stroke.renderBounds.height) <= width) { return [] }
             let scale = max(hypot(transform.a, transform.b), hypot(transform.c, transform.d))
             func erased(_ sample: InkStrokePoint) -> Bool {
-                distance(sample.location.applying(transform), to: points) <= radius + (mode == .standard ? 2 : 0) + max(sample.size.width, sample.size.height) * scale / 2
+                distance(sample.location.applying(transform), to: points) <= radius + max(sample.size.width, sample.size.height) * scale / 2
             }
             var fragments: [InkStroke] = []
             for piece in stroke.paintedPaths() {
@@ -46,9 +58,12 @@ enum EraserEditing {
                     fragment.rawSamples = kept
                     // Painted pieces already contain the original pattern and taper geometry.
                     if var style = fragment.style { style.pattern = .solid; style.sharpness = 0; fragment.style = style }
+                    // Kept samples are linear subdivisions of the original ones, so a plain stroke's fragment repaints the same
+                    // dots and quads: no CGPath intersection (quadratic in samples) and it stays cheap to hit.
+                    // A precision-edited stroke has holes its samples don't know about, so it is still clipped to its outline.
+                    fragment.vectorOutline = nil
                     if stroke.vectorOutline != nil {
-                        fragment.vectorOutline = nil
-                        let clipped = fragment.paintedPath.intersection(stroke.paintedPath)
+                        let clipped = fragment.paintedPath.intersection(originalPaint)
                         guard !clipped.isEmpty else { kept = []; return }
                         fragment.vectorOutline = InkVectorPath(clipped)
                     }
@@ -73,6 +88,88 @@ enum EraserEditing {
             return fragments
         }
         return InkDrawing(strokes: strokes)
+    }
+
+    // union(all) - area == union(far) + (union(near) - area) when far primitives never reach the area, so the
+    // costly boolean only sees the dots and quads around the eraser. Output windings stay compatible (checked in tests).
+    static func paint(of stroke: InkStroke, subtracting area: CGPath) -> CGPath {
+        let box = area.boundingBoxOfPath
+        let near = CGMutablePath(), far = CGMutablePath()
+        for piece in stroke.paintedPaths() where !piece.isEmpty {
+            for i in 0..<max(1, piece.count - 1) {
+                let pair = Array(piece[i...min(i + 1, piece.count - 1)])
+                let r = pair.map { max(0.025, max($0.size.width, $0.size.height) / 2) }.max() ?? 0
+                let rect = pair.reduce(CGRect.null) { $0.union(CGRect(origin: $1.location, size: .zero)) }.insetBy(dx: -r, dy: -r)
+                InkStroke.addOutline(of: pair, from: 0, to: rect.intersects(box) ? near : far)
+            }
+        }
+        let result = CGMutablePath()
+        result.addPath(far)
+        if !near.isEmpty { result.addPath(near.subtracting(area)) }
+        return result
+    }
+
+    /// Splits an outline into contours whose box meets `box` and the rest. A hole lies inside its outer contour's box,
+    /// so contours boxed inside a near one go with it and booleans never see half a shape.
+    static func contours(of path: CGPath, near box: CGRect) -> (near: CGMutablePath, far: CGMutablePath) {
+        var pieces: [CGMutablePath] = []
+        path.applyWithBlock { pointer in
+            let e = pointer.pointee
+            if e.type == .moveToPoint || pieces.isEmpty { pieces.append(CGMutablePath()) }
+            let piece = pieces[pieces.count - 1]
+            switch e.type {
+            case .moveToPoint: piece.move(to: e.points[0])
+            case .addLineToPoint: piece.addLine(to: e.points[0])
+            case .addQuadCurveToPoint: piece.addQuadCurve(to: e.points[1], control: e.points[0])
+            case .addCurveToPoint: piece.addCurve(to: e.points[2], control1: e.points[0], control2: e.points[1])
+            case .closeSubpath: piece.closeSubpath()
+            @unknown default: break
+            }
+        }
+        let boxes = pieces.map(\.boundingBoxOfPath), touching = boxes.filter { $0.intersects(box) }
+        let near = CGMutablePath(), far = CGMutablePath()
+        for (piece, bounds) in zip(pieces, boxes) {
+            (bounds.intersects(box) || touching.contains { $0.contains(bounds) } ? near : far).addPath(piece)
+        }
+        return (near, far)
+    }
+
+    // True when the swept eraser (capsule of `reach` around `points`) overlaps the stroke's dots and quads.
+    static func touches(_ stroke: InkStroke, along points: [CGPoint], reach: CGFloat) -> Bool {
+        touches(stroke, segments: points.count == 1 ? [(points[0], points[0])] : Array(zip(points, points.dropFirst())), reach: reach)
+    }
+
+    // Shared by the eraser (swept capsule) and the lasso (polygon edges plus an inside test, reach 0).
+    static func touches(_ stroke: InkStroke, segments sweep: [(CGPoint, CGPoint)], reach: CGFloat, inside: ((CGPoint) -> Bool)? = nil) -> Bool {
+        let t = stroke.transform
+        let scale = max(hypot(t.a, t.b), hypot(t.c, t.d))
+        func closest(_ x: CGPoint, _ a: CGPoint, _ b: CGPoint) -> (d: CGFloat, t: CGFloat) {
+            let dx = b.x - a.x, dy = b.y - a.y, l = dx * dx + dy * dy
+            let u = l > 0 ? min(1, max(0, ((x.x - a.x) * dx + (x.y - a.y) * dy) / l)) : 0
+            return (hypot(x.x - a.x - u * dx, x.y - a.y - u * dy), u)
+        }
+        func side(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> CGFloat { (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) }
+        for piece in stroke.paintedPaths() {
+            let world = piece.map { ($0.location.applying(t), max(0.025, max($0.size.width, $0.size.height) / 2) * scale) }
+            if let inside, world.contains(where: { inside($0.0) }) { return true }
+            for i in 0..<max(1, world.count - 1) {
+                let (a, ra) = world[i], (b, rb) = world[min(i + 1, world.count - 1)]
+                let box = CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y)).insetBy(dx: -(max(ra, rb) + reach), dy: -(max(ra, rb) + reach))
+                for (p, q) in sweep where box.contains(p) || box.contains(q) || box.intersects(CGRect(x: min(p.x, q.x), y: min(p.y, q.y), width: abs(p.x - q.x), height: abs(p.y - q.y))) {
+                    if side(a, b, p) * side(a, b, q) < 0 && side(p, q, a) * side(p, q, b) < 0 { return true }
+                    if closest(a, p, q).d <= reach + ra || closest(b, p, q).d <= reach + rb { return true }
+                    for e in [p, q] { let c = closest(e, a, b); if c.d <= reach + ra + (rb - ra) * c.t { return true } }
+                }
+            }
+        }
+        return false
+    }
+
+    // Cheap geometry comparison; avoids JSON-encoding whole pages on the main thread.
+    static func changed(_ a: InkDrawing, _ b: InkDrawing) -> Bool {
+        a.strokes.count != b.strokes.count || zip(a.strokes, b.strokes).contains {
+            $0.id != $1.id || $0.vectorOutline != $1.vectorOutline || $0.path.controlPoints != $1.path.controlPoints
+        }
     }
 
     static func interpolate(_ a: InkStrokePoint, _ b: InkStrokePoint, _ t: CGFloat) -> InkStrokePoint {

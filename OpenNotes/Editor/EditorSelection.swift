@@ -18,10 +18,12 @@ extension EditorSession {
     }
 
     @discardableResult
-    func moveSelection(inside path: UIBezierPath, by requested: CGPoint) async -> Bool {
+    func moveSelection(inside path: UIBezierPath, by requested: CGPoint, durable: Bool = true) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
+        let end = Perf.begin("lasso.move"); defer { end() }
         guard !isReadOnly, requested.x.isFinite, requested.y.isFinite, let pageID = page?.id,
-              await flush(), let original = page, original.id == pageID else { return false }
-        let snapshot = SelectionMoveSnapshot(page: original, drawing: canvas.drawing, path: path, settings: toolSettings)
+              await prepareEdit(durable: durable), let original = page, original.id == pageID else { return false }
+        let snapshot = selectionSnapshot(original, path: path)
         guard !snapshot.isEmpty, !snapshot.containsLockedObjects else { return false }
         let delta = snapshot.clamped(requested)
         guard delta != .zero else { return false }
@@ -34,15 +36,18 @@ extension EditorSession {
             guard snapshot.strokeIndices.contains(index) else { return stroke }
             return InkDrawing(strokes: [stroke]).transformed(using: CGAffineTransform(translationX: delta.x, y: delta.y)).strokes[0]
         }
-        replaceContent(InkDrawing(strokes: strokes), elements: moved, actionName: "Move selection", attachObjects: true)
-        return await flush()
+        let reattached = reattachingMovedInk(strokes, moved: snapshot.strokeIDs, elements: moved, movedElements: snapshot.elementIDs)
+        replaceContent(InkDrawing(strokes: reattached), elements: moved, actionName: "Move selection", attachObjects: true)
+        return durable ? await flush() : true
     }
 
     @discardableResult
     func transformSelection(inside path: UIBezierPath, scale: CGFloat, deleting: Bool = false) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
+        let end = Perf.begin("lasso.transform"); defer { end() }
         guard !isReadOnly, scale.isFinite, (0.1...10).contains(scale), await flush(), let original = page else { return false }
         let drawing = canvas.drawing
-        let snapshot = SelectionMoveSnapshot(page: original, drawing: drawing, path: path, settings: toolSettings)
+        let snapshot = selectionSnapshot(original, path: path)
         let elements = snapshot.elements
         let selected = drawing.strokes.indices.map { snapshot.strokeIndices.contains($0) }
         guard selected.contains(true) || !elements.isEmpty, !snapshot.containsLockedObjects else { return false }
@@ -74,9 +79,25 @@ extension EditorSession {
     }
 }
 
+/// What a selection contains, fixed when it is made: moving it over other ink never picks that ink up.
+struct SelectionIdentity: Equatable {
+    var strokeIDs: Set<UUID>
+    var elementIDs: Set<UUID>
+}
+
+@MainActor
+extension EditorSession {
+    /// The current selection's content: by identity once captured, otherwise from the outline.
+    func selectionSnapshot(_ page: NotePage, path: UIBezierPath) -> SelectionMoveSnapshot {
+        if let selectionIDs { return SelectionMoveSnapshot(page: page, drawing: canvas.drawing, selection: selectionIDs, settings: toolSettings) }
+        return SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
+    }
+}
+
 // Shared by the drag preview and the committed edit, including page-edge constraints.
 struct SelectionMoveSnapshot {
     let strokeIndices: Set<Int>
+    let strokeIDs: Set<UUID>
     let elementIDs: Set<UUID>
     let ink: InkDrawing
     let elements: [PageElement]
@@ -89,6 +110,7 @@ struct SelectionMoveSnapshot {
     var isEmpty: Bool { strokeIndices.isEmpty && elementIDs.isEmpty }
 
     init(page: NotePage, drawing: InkDrawing, path: UIBezierPath, settings: EditorToolSettings) {
+        let end = Perf.begin("lasso.snapshot"); defer { end() }
         let selectedElements = DocumentClipboard.selectedElements(page, inside: path, settings: settings)
         var selectedIDs = Set(selectedElements.map(\.id))
         // A selected parent owns its descendants, independently of lasso filters.
@@ -98,14 +120,46 @@ struct SelectionMoveSnapshot {
             for item in page.elements ?? [] where item.parentID.map({ selectedIDs.contains($0) }) == true { selectedIDs.insert(item.id) }
             changed = old != selectedIDs.count
         }
-        let indices = Set(drawing.strokes.indices.filter {
-            (settings.includeHandwriting && DocumentClipboard.contains(drawing.strokes[$0], inside: path)) || drawing.strokes[$0].parentID.map({ selectedIDs.contains($0) }) == true
+        let occlusion = StickyInkOcclusion(page.elements ?? [])
+        let hiddenParents = page.collapsedContentParents
+        let edges = DocumentClipboard.edges(of: path.cgPath)
+        let indices = Set(drawing.strokes.indices.filter { index in
+            let stroke = drawing.strokes[index]
+            if stroke.parentID.map({ selectedIDs.contains($0) }) == true { return true }
+            // Occlusion only removes geometry, so a raw miss is final: the path booleans run only for hits.
+            guard settings.includeHandwriting, stroke.parentID.map({ !hiddenParents.contains($0) }) != false,
+                  DocumentClipboard.contains(stroke, inside: path, edges: edges),
+                  let visible = occlusion.visible(stroke) else { return false }
+            return visible.vectorOutline == stroke.vectorOutline || DocumentClipboard.contains(visible, inside: path, edges: edges)
         })
+        self.init(page: page, drawing: drawing, elementIDs: selectedIDs, strokeIndices: indices, settings: settings)
+    }
+
+    /// Rebuilds a captured selection against the current document; deleted objects simply drop out.
+    init(page: NotePage, drawing: InkDrawing, selection: SelectionIdentity, settings: EditorToolSettings) {
+        var selectedIDs = selection.elementIDs.intersection((page.elements ?? []).map(\.id))
+        var changed = true
+        while changed {
+            let old = selectedIDs.count
+            for item in page.elements ?? [] where item.parentID.map({ selectedIDs.contains($0) }) == true { selectedIDs.insert(item.id) }
+            changed = old != selectedIDs.count
+        }
+        let indices = Set(drawing.strokes.indices.filter { index in
+            let stroke = drawing.strokes[index]
+            return selection.strokeIDs.contains(stroke.id) || stroke.parentID.map { selectedIDs.contains($0) } == true
+        })
+        self.init(page: page, drawing: drawing, elementIDs: selectedIDs, strokeIndices: indices, settings: settings)
+    }
+
+    var identity: SelectionIdentity { SelectionIdentity(strokeIDs: strokeIDs, elementIDs: elementIDs) }
+
+    private init(page: NotePage, drawing: InkDrawing, elementIDs selectedIDs: Set<UUID>, strokeIndices indices: Set<Int>, settings: EditorToolSettings) {
         let lockedParents = Set((page.elements ?? []).filter { $0.isLocked == true }.map(\.id))
         containsLockedObjects = !lockedParents.isDisjoint(with: selectedIDs) || indices.contains { index in
             drawing.strokes[index].isLocked == true || drawing.strokes[index].parentID.map { lockedParents.contains($0) } == true
         }
         strokeIndices = indices
+        strokeIDs = Set(indices.map { drawing.strokes[$0].id })
         ink = InkDrawing(strokes: drawing.strokes.enumerated().filter { indices.contains($0.offset) }.map(\.element))
         elements = (page.elements ?? []).filter { selectedIDs.contains($0.id) }
         elementIDs = selectedIDs

@@ -13,6 +13,8 @@ struct LibraryScreen: View {
     @State private var path: [UUID] = []
     @State private var query = ""
     @State private var newNotebookShown = false
+    @State private var accountShown = false
+    @State private var diagnosticsShown = false
     @State private var selectingNotes = false
     @State private var selectedNotes: Set<UUID> = []
     @AppStorage("libraryLayout") private var layout = "grid"
@@ -31,11 +33,17 @@ struct LibraryScreen: View {
     private var currentFolderID: UUID? { selectedFolderID ?? store.library.folders.first?.id }
     private var folders: [NotebookFolder] {
         guard filter == 0, query.isEmpty else { return [] }
-        return store.library.childFolders(of: currentFolderID)
+        let children = store.library.childFolders(of: currentFolderID)
+        // Safety net: a root folder created by another device is never nested under this device's home; show it here so its notebooks stay reachable.
+        guard selectedFolderID == nil, let home = store.library.folders.first?.id else { return children }
+        return children + store.library.rootFolders.filter { $0.id != home && !children.contains($0) }
     }
     @State private var rename: NoteDocument?
     @State private var title = ""
-    @State private var deletion: NoteDocument?
+    @State private var deletion: [UUID] = []
+    @State private var deleteShown = false
+    @State private var folderDeletion: NotebookFolder?
+    @State private var emptyTrashShown = false
     var notes: [NoteDocument] {
         let found = store.matchingNotes(query, trash: trash, favorites: favorites).filter {
             filter != 0 || !query.isEmpty || $0.folderID == currentFolderID
@@ -49,14 +57,25 @@ struct LibraryScreen: View {
         }.preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
     }
     private var navigationContent: some View {
-        HStack(spacing: 0) {
+        // Filtering, sorting and full-text matching run once per pass, not once per reader.
+        let notes = notes
+        return HStack(spacing: 0) {
             if sizeClass == .regular { libraryRail.frame(width: 206); Divider() }
-            libraryContent
+            libraryContent(notes)
+        }
+        .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
+            if sizeClass != .regular {
+                CloudStatusLine(cloud: store.cloud) { accountShown = true }
+                    .disabled(!store.ready)
+                    .padding(.horizontal, 16)
+                    .background(Color(uiColor: .systemGroupedBackground))
+            }
         }
         .navigationTitle(trash ? "Trash" : favorites ? "Favorites" : selectedFolderID.flatMap { id in store.library.folders.first(where: { $0.id == id })?.name } ?? "Notebooks")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Search notebooks")
         .onChange(of: filter) { value in if value != 0 { selectedFolderID = nil } }
+        .onChange(of: notes.map(\.id)) { ids in selectedNotes.formIntersection(ids) }
         .task(id: query) {
             guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
@@ -66,9 +85,23 @@ struct LibraryScreen: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { accountShown = true } label: {
+                    Label("Account and connections", systemImage: "person.crop.circle")
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityIdentifier("library.account")
+                .disabled(!store.ready)
+            }
+            ToolbarItem(placement: .topBarTrailing) { SyncProgressButton(store: store, cloud: store.cloud).disabled(!store.ready) }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    if trash {
+                        Button("Empty Trash", systemImage: "trash", role: .destructive) { emptyTrashShown = true }
+                            .disabled(!store.library.notes.contains { $0.deletedAt != nil && $0.purgedAt == nil })
+                    }
                     Button("Import", systemImage: "square.and.arrow.down") { importer = true }
+                    Button("Settings & logs", systemImage: "gearshape") { diagnosticsShown = true }
                     Button("New notebook", systemImage: "plus") { newNotebookShown = true }
                     Button("New folder", systemImage: "folder.badge.plus") { renamedFolder = nil; folderEditorShown = true }
                     Picker("Show", selection: $filter) {
@@ -114,7 +147,7 @@ struct LibraryScreen: View {
             .onChange(of: scenePhase) { phase in if phase == .active { Task { await consumeInbox() } } }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in Task { await store.disk.clearThumbnails() } }
             .onOpenURL { url in Task { if let id = await store.importFile(url, folderID: currentFolderID) { openNotebook(id) } } }
-            .fileImporter(isPresented: $importer, allowedContentTypes: [.pdf, .image, UTType(filenameExtension: "catnote") ?? .data]) { result in
+            .fileImporter(isPresented: $importer, allowedContentTypes: [.pdf, .image, UTType(filenameExtension: "opennote") ?? .data, UTType(filenameExtension: "catnote") ?? .data]) { result in
                 Task {
                     do { if let id = await store.importFile(try result.get(), folderID: currentFolderID) { openNotebook(id) } }
                     catch { store.error = error.localizedDescription }
@@ -130,9 +163,24 @@ struct LibraryScreen: View {
                 }
                 Button("Cancel", role: .cancel) { rename = nil }
             }
-            .confirmationDialog("Move this notebook to Trash?", isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } }), titleVisibility: .visible) {
-                Button("Move to Trash", role: .destructive) { if let note = deletion { store.update(note.id) { $0.deletedAt = Date() } }; deletion = nil }
-            } message: { Text("You can restore it from the library.") }
+            .alert(deletion.count == 1 ? "Move this notebook to Trash?" : "Move \(deletion.count) notebooks to Trash?", isPresented: $deleteShown, presenting: deletion) { ids in
+                Button("Move to Trash", role: .destructive) {
+                    for id in ids { store.update(id) { $0.deletedAt = Date() } }
+                    deletion = []; selectedNotes = []; selectingNotes = false
+                }
+                Button("Cancel", role: .cancel) { deletion = [] }
+            } message: { _ in Text("You can restore notebooks from Trash.") }
+            .alert("Delete this folder and its contents?", isPresented: Binding(get: { folderDeletion != nil }, set: { if !$0 { folderDeletion = nil } })) {
+                Button("Move to Trash", role: .destructive) {
+                    if let folderDeletion { store.trashFolder(folderDeletion.id) }
+                    folderDeletion = nil
+                }
+                Button("Cancel", role: .cancel) { folderDeletion = nil }
+            } message: { Text("The folder and all subfolders will be removed. Their notebooks can be restored from Trash.") }
+            .alert("Empty Trash?", isPresented: $emptyTrashShown) {
+                Button("Empty Trash", role: .destructive) { store.emptyTrash() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("All notebooks in Trash will be removed from the library on synchronized devices. Cloud revision history is retained.") }
             .alert("OpenNotes", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
                 Button("OK") { store.error = nil }
                 if let failedSharedImport {
@@ -147,6 +195,10 @@ struct LibraryScreen: View {
             .sheet(isPresented: $newNotebookShown) {
                 NewNotebookSheet(store: store, folderID: currentFolderID, created: openNotebook)
             }
+            .sheet(isPresented: $diagnosticsShown) { DiagnosticsScreen() }
+            .sheet(isPresented: $accountShown) {
+                CloudScreen(store: store)
+            }
             .sheet(isPresented: $folderEditorShown) {
                 FolderNameSheet(name: renamedFolder?.name ?? "", title: renamedFolder == nil ? "New folder" : "Rename folder") { name in
                     let action = LibraryAction(kind: renamedFolder == nil ? .createFolder : .renameFolder, folderID: renamedFolder?.id, parentID: currentFolderID, name: name)
@@ -160,12 +212,12 @@ struct LibraryScreen: View {
                 }
             }
     }
-    private var libraryContent: some View {
+    private func libraryContent(_ notes: [NoteDocument]) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                libraryHeader
+                libraryHeader(noteCount: notes.count)
                 if !trash { libraryControls }
-                if selectingNotes && !selectedNotes.isEmpty {
+                if selectingNotes && !selectedNotes.isEmpty && !trash {
                     HStack {
                         Text("\(selectedNotes.count) selected").font(.subheadline)
                         Spacer()
@@ -173,6 +225,11 @@ struct LibraryScreen: View {
                             movingFolder = nil; movingDocuments = Array(selectedNotes); moveShown = true
                             selectingNotes = false; selectedNotes = []
                         }.accessibilityIdentifier("library.move")
+                        .frame(minHeight: 44)
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            deletion = Array(selectedNotes); deleteShown = true
+                        }.accessibilityIdentifier("library.delete")
+                        .frame(minWidth: 44, minHeight: 44)
                     }.padding(12).background(OpenNotesStyle.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                 }
                 if filter == 0 && query.isEmpty && selectedFolderID != nil { folderBreadcrumbs }
@@ -199,11 +256,11 @@ struct LibraryScreen: View {
             }.padding(dynamicTypeSize.isAccessibilitySize || sizeClass != .regular ? 16 : 28)
         }.frame(maxWidth: .infinity).background(Color(uiColor: .systemGroupedBackground))
     }
-    private var libraryHeader: some View {
+    private func libraryHeader(noteCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(trash ? "Trash" : favorites ? "Favorites" : selectedFolderID.flatMap { id in store.library.folders.first { $0.id == id }?.name } ?? "Your notebooks")
                 .font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
-            Text(trash ? "Restore notebooks whenever you need them." : "\(notes.count) notebooks · All your ideas, together.")
+            Text(trash ? "Restore notebooks whenever you need them." : "\(noteCount) notebooks · All your ideas, together.")
                 .font(.subheadline).foregroundStyle(.secondary)
         }.padding(.top, 8)
     }
@@ -219,7 +276,7 @@ struct LibraryScreen: View {
                 Button("Documents") { filter = 0 }
                 Button("Favorites") { filter = 1 }
                 Button("Trash") { filter = 2 }
-            } label: { Label("Show", systemImage: "line.3.horizontal.decrease").fixedSize() }.accessibilityIdentifier("library.filter")
+            } label: { Label("Show", systemImage: "line.3.horizontal.decrease").fixedSize().frame(minHeight: 44).contentShape(Rectangle()) }.accessibilityIdentifier("library.filter")
             Button(selectingNotes ? "Done" : "Select") { selectingNotes.toggle(); selectedNotes = [] }.accessibilityIdentifier("library.select")
             Picker("Library layout", selection: $layout) {
                 Image(systemName: "square.grid.2x2").tag("grid")
@@ -242,7 +299,8 @@ struct LibraryScreen: View {
             Button { importer = true } label: { Label("Import document", systemImage: "square.and.arrow.down").frame(minHeight: 44) }
             Button { renamedFolder = nil; folderEditorShown = true } label: { Label("New folder", systemImage: "folder.badge.plus").frame(minHeight: 44) }
             Spacer()
-            CloudStatusLine(cloud: store.cloud).padding(.bottom, 20)
+            CloudStatusLine(cloud: store.cloud) { accountShown = true }
+                .disabled(!store.ready).padding(.bottom, 20)
         }.padding(.horizontal, 18).background(OpenNotesStyle.rail)
     }
     private func toggleSelection(_ id: UUID) {
@@ -252,9 +310,10 @@ struct LibraryScreen: View {
         HStack {
             Button { selectedFolderID = folder.id } label: {
                 Label(folder.name, systemImage: "folder.fill").frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                    .contentShape(Rectangle())   // the empty middle of the row opens the folder too
             }.buttonStyle(.plain).accessibilityIdentifier("library.folder.\(folder.id.uuidString)")
             Menu { folderActions(folder) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("Actions for \(folder.name)")
-        }.padding(.horizontal, 14).background(OpenNotesStyle.chrome, in: RoundedRectangle(cornerRadius: 12))
+        }.padding(.horizontal, 14).background(OpenNotesStyle.chrome, in: RoundedRectangle(cornerRadius: 12)).contextMenu { folderActions(folder) }
     }
     private func noteRow(_ note: NoteDocument) -> some View {
         HStack(spacing: 12) {
@@ -268,6 +327,7 @@ struct LibraryScreen: View {
                         Text("\(note.pageIDs.count) pages · \(note.updatedAt.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    NotebookSyncBadge(cloud: store.cloud, note: note)
                     if note.favorite == true { Image(systemName: "star.fill").foregroundStyle(.orange) }
                     if selectingNotes { Image(systemName: selectedNotes.contains(note.id) ? "checkmark.circle.fill" : "circle") }
                 }.frame(minHeight: 68).contentShape(Rectangle())
@@ -315,6 +375,7 @@ struct LibraryScreen: View {
     @ViewBuilder private func folderActions(_ folder: NotebookFolder) -> some View {
         Button("Rename", systemImage: "pencil") { renamedFolder = folder; folderEditorShown = true }
         Button("Move", systemImage: "folder") { movingFolder = folder.id; movingDocuments = []; moveShown = true }
+        Button("Delete folder", systemImage: "trash", role: .destructive) { folderDeletion = folder }
     }
     private func noteCard(_ note: NoteDocument) -> some View {
         return VStack(alignment: .leading, spacing: 8) {
@@ -342,6 +403,7 @@ struct LibraryScreen: View {
                     Text(note.updatedAt, style: .date)
                 }.font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
+                NotebookSyncBadge(cloud: store.cloud, note: note)
                 if selectingNotes { Image(systemName: selectedNotes.contains(note.id) ? "checkmark.circle.fill" : "circle").foregroundStyle(OpenNotesStyle.accent) }
                 if note.favorite == true { Image(systemName: "star.fill").foregroundStyle(.orange).accessibilityLabel("Favorite") }
                 Menu { noteActions(note) } label: {
@@ -410,12 +472,12 @@ struct LibraryScreen: View {
     }
     @ViewBuilder private func noteActions(_ note: NoteDocument) -> some View {
         if trash {
-            Button("Restore notebook", systemImage: "arrow.uturn.backward") { store.update(note.id) { $0.deletedAt = nil } }
+            Button("Restore notebook", systemImage: "arrow.uturn.backward") { store.restoreNote(note.id) }
         } else {
             Button("Move to…", systemImage: "folder") { movingFolder = nil; movingDocuments = [note.id]; moveShown = true }
             Button("Rename", systemImage: "pencil") { title = note.title; rename = note }
             Button(note.favorite == true ? "Remove from favorites" : "Add to favorites", systemImage: "star") { store.update(note.id) { $0.favorite = !($0.favorite ?? false) } }
-            Button("Move to Trash", systemImage: "trash", role: .destructive) { deletion = note }
+            Button("Move to Trash", systemImage: "trash", role: .destructive) { deletion = [note.id]; deleteShown = true }
         }
     }
 
@@ -423,5 +485,46 @@ struct LibraryScreen: View {
 
 struct CloudStatusLine: View {
     @ObservedObject var cloud: CloudSync
-    var body: some View { Label(cloud.signedIn ? cloud.status : "No account · Available offline", systemImage: cloud.signedIn ? "cloud" : "internaldrive").font(.caption).foregroundStyle(.secondary) }
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if cloud.phase == .syncing { ProgressView().controlSize(.small) }
+                else { Image(systemName: cloud.phase.icon) }
+                Text(cloud.phase.label)
+            }.font(.caption).foregroundStyle(.secondary).frame(minHeight: 44, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("library.syncStatus")
+        .accessibilityLabel("Sync status: \(cloud.phase.label)")
+        .accessibilityValue(cloud.status + (cloud.lastSuccessfulSync.map { ". Last successful sync: " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ". No successful sync yet."))
+        .accessibilityHint("Open account and sync details")
+    }
+}
+
+/// Compact save/sync summary in the library toolbar; tap for the pending list and progress.
+struct SyncProgressButton: View {
+    @ObservedObject var store: LibraryStore
+    @ObservedObject var cloud: CloudSync
+    @State private var shown = false
+    var body: some View {
+        let (title, icon) = summary
+        Button { shown = true } label: { Label(title, systemImage: icon).labelStyle(.titleAndIcon).font(.caption).frame(minHeight: 44) }
+            .popover(isPresented: $shown) {
+                VStack(alignment: .leading, spacing: 10) {
+                    SyncProgressView(store: store, cloud: cloud)
+                    Text(cloud.lastSuccessfulSync.map { "Last successful sync " + $0.formatted(date: .abbreviated, time: .shortened) } ?? "No successful sync yet")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding().frame(width: 320)
+            }
+            .accessibilityIdentifier("library.syncProgress")
+    }
+    private var summary: (String, String) {
+        if store.saving { return ("Saving…", "internaldrive") }
+        let progress = cloud.progress
+        if progress.step != .idle { return (progress.total > 0 ? "\(progress.step.rawValue) \(progress.completed)/\(progress.total)" : "Syncing…", "arrow.triangle.2.circlepath.icloud") }
+        guard cloud.libraryLinked && cloud.enabled else { return ("Saved", "checkmark.circle") }
+        let pending = store.library.notes.filter { cloud.notebookState($0) == .pending }.count
+        return pending > 0 ? ("\(pending) to upload", "icloud.and.arrow.up") : ("Synced", "checkmark.icloud")
+    }
 }

@@ -64,14 +64,10 @@ struct NotebookWorkspaceView: View {
         VStack(spacing: 0) {
             NotebookTabs(workspace: workspace, store: workspace.store) { dismiss() }
             if let id = workspace.active {
-                EditorScreen(store: workspace.store, noteID: id, session: workspace.session(id)) {
-                    Task {
-                        await workspace.returnToLibrary()
-                        if workspace.active == nil { dismiss() }
-                    }
-                }.id(id)
+                EditorScreen(store: workspace.store, noteID: id, session: workspace.session(id)).id(id)
             }
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .navigationBarBackButtonHidden()
         .toolbar(.hidden, for: .navigationBar)
         .alert("Could not save", isPresented: Binding(
@@ -89,44 +85,83 @@ private struct NotebookTabs: View {
     @ObservedObject var workspace: NotebookWorkspace
     @ObservedObject var store: LibraryStore
     let didCloseLastTab: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var renamedID: UUID?
     @State private var title = ""
 
+    /// Which edge the active tab scrolled past, if any: it is then pinned there so it never leaves the screen.
+    private enum PinnedEdge { case none, leading, trailing }
+    @State private var pinned = PinnedEdge.none
+    private struct ActiveTabFrame: PreferenceKey {
+        static var defaultValue: CGRect? = nil
+        static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) { value = nextValue() ?? value }
+    }
+
+    private func tab(_ id: UUID) -> NotebookTab {
+        NotebookTab(
+            title: store.library.note(id: id)?.title ?? "Notebook",
+            id: id,
+            selected: workspace.active == id,
+            select: { Task { await workspace.select(id) } },
+            rename: {
+                title = store.library.note(id: id)?.title ?? ""
+                renamedID = id
+            },
+            close: {
+                Task {
+                    await workspace.close(id)
+                    if workspace.active == nil { didCloseLastTab() }
+                }
+            }
+        )
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            ScrollViewReader { reader in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        Button {
-                            Task { await workspace.returnToLibrary(); if workspace.active == nil { didCloseLastTab() } }
-                        } label: {
-                            Label("Library", systemImage: "square.grid.2x2").labelStyle(.iconOnly).frame(width: 48, height: 44)
-                        }.buttonStyle(.plain).accessibilityIdentifier("workspace.tabLibrary")
-                        ForEach(workspace.tabs, id: \.self) { id in
-                            NotebookTab(
-                                title: store.library.note(id: id)?.title ?? "Notebook",
-                                id: id,
-                                selected: workspace.active == id,
-                                select: { Task { await workspace.select(id) } },
-                                rename: {
-                                    title = store.library.note(id: id)?.title ?? ""
-                                    renamedID = id
-                                },
-                                close: {
-                                    Task {
-                                        await workspace.close(id)
-                                        if workspace.active == nil { didCloseLastTab() }
+            // The library button stays put; only the tabs scroll. 8 + 48 + 4 = its padding, width and gap.
+            let rowWidth = max(0, geometry.size.width - 8 - 48 - 4)
+            let tabWidth = OpenNotesStyle.notebookTabWidth(availableWidth: max(0, rowWidth - 8), count: workspace.tabs.count, spacing: 4)
+            HStack(spacing: 4) {
+                Button {
+                    Task { await workspace.returnToLibrary(); if workspace.active == nil { didCloseLastTab() } }
+                } label: {
+                    Label("Library", systemImage: "square.grid.2x2").labelStyle(.iconOnly).frame(width: 48, height: 44)
+                }.buttonStyle(.plain).accessibilityIdentifier("workspace.library").padding(.leading, 8)
+                ScrollViewReader { reader in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(workspace.tabs, id: \.self) { id in
+                                tab(id)
+                                    .frame(width: tabWidth)
+                                    .background {
+                                        if workspace.active == id {
+                                            GeometryReader { Color.clear.preference(key: ActiveTabFrame.self, value: $0.frame(in: .named("tabs"))) }
+                                        }
                                     }
-                                }
-                            )
-                            .frame(width: OpenNotesStyle.notebookTabWidth(availableWidth: max(0, geometry.size.width - 16), count: workspace.tabs.count))
-                            .id(id)
+                                    .id(id)
+                            }
+                        }.padding(.trailing, 8).padding(.vertical, 4)
+                    }
+                    .coordinateSpace(name: "tabs")
+                    .onPreferenceChange(ActiveTabFrame.self) { frame in
+                        let edge: PinnedEdge = frame.map { $0.minX < -1 ? .leading : $0.maxX > rowWidth + 1 ? .trailing : .none } ?? .none
+                        if edge != pinned { pinned = edge }
+                    }
+                    .overlay(alignment: pinned == .leading ? .leading : .trailing) {
+                        if pinned != .none, let active = workspace.active {
+                            tab(active).frame(width: tabWidth)
+                                .background(OpenNotesStyle.rail, in: RoundedRectangle(cornerRadius: 12))
+                                .shadow(color: .black.opacity(0.12), radius: 4)
+                                .padding(.vertical, 4)
+                                .simultaneousGesture(TapGesture().onEnded { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { reader.scrollTo(active) } })
                         }
-                    }.padding(.horizontal, 8).padding(.vertical, 4)
-                }
-                .task(id: "\(workspace.active?.uuidString ?? "")-\(geometry.size.width)") {
-                    await Task.yield()
-                    if let active = workspace.active, !Task.isCancelled { reader.scrollTo(active) }
+                    }
+                    .task(id: "\(workspace.active?.uuidString ?? "")-\(geometry.size.width)") {
+                        await Task.yield()
+                        if let active = workspace.active, !Task.isCancelled {
+                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { reader.scrollTo(active) }
+                        }
+                    }
                 }
             }
         }

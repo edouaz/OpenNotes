@@ -11,10 +11,15 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Check isolated shape recognition
+        run: sh scripts/test-shape-recognition.sh
       - name: Check website appearance
         run: node docs/tests/theme.test.cjs
       - name: Check generated project
         run: |
+          # Match the checked-in project's cloud resource using public placeholders only.
+          cp Config/Supabase.example.plist Config/Supabase.plist
+          sed -i '' -e 's/YOUR_PROJECT/example/g' -e 's/YOUR_PUBLISHABLE_KEY/sb_publishable_example/g' Config/Supabase.plist
           python3 scripts/generate-project.py
           git diff --exit-code -- OpenNotes.xcodeproj
       - name: Select an installed iPad simulator

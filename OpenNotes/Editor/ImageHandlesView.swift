@@ -5,6 +5,7 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
     private var handles: [UIView] = []
     private let outline = CAShapeLayer()
     let deleteButton = UIButton(type: .system)
+    private let deleteBadge = UIView()
     var item: PageElement
     var zoom: CGFloat = 1
     var pageSize = CGSize.zero
@@ -20,10 +21,10 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
         }
     }
     private var initial = CGRect.zero
-    private var dragStart = CGPoint.zero
+    private var start: PageElement
     private let imageDrag = UIPanGestureRecognizer()
     init(item: PageElement, image: UIImage?) {
-        self.item = item
+        self.item = item; self.start = item
         super.init(frame: .zero)
         preview.image = image; preview.contentMode = .scaleToFill; preview.isUserInteractionEnabled = false
         addSubview(preview)
@@ -43,14 +44,20 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
             handle.addGestureRecognizer(pan)
             handles.append(handle); addSubview(handle)
         }
-        deleteButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        deleteBadge.backgroundColor = UIColor.white.withAlphaComponent(0.95)
+        deleteBadge.layer.cornerRadius = 11; deleteBadge.isUserInteractionEnabled = false
+        deleteBadge.layer.shadowColor = UIColor.black.cgColor; deleteBadge.layer.shadowOpacity = 0.2; deleteBadge.layer.shadowRadius = 2; deleteBadge.layer.shadowOffset = CGSize(width: 0, height: 1)
+        deleteButton.addSubview(deleteBadge)
+        deleteButton.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .heavy)), for: .normal)
         deleteButton.tintColor = .systemRed
-        deleteButton.backgroundColor = .systemBackground; deleteButton.layer.cornerRadius = 22
+        if let image = deleteButton.imageView { deleteButton.bringSubviewToFront(image) }
         deleteButton.accessibilityLabel = "Delete image"
         deleteButton.accessibilityIdentifier = "image.delete"
         deleteButton.addTarget(self, action: #selector(deleteImage), for: .touchUpInside)
         addSubview(deleteButton)
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(selectImage)))
+        let tap = UITapGestureRecognizer(target: self, action: #selector(selectImage))
+        tap.cancelsTouchesInView = false
+        addGestureRecognizer(tap)
         addInteraction(UIContextMenuInteraction(delegate: self))
         isAccessibilityElement = true
         accessibilityLabel = "Image"
@@ -67,12 +74,12 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
         ]
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func accessibilityActivate() -> Bool { selectImage(); return true }
     func acceptsImageDrag(at point: CGPoint) -> Bool {
         !showsHandles || (!handles.contains { $0.frame.contains(point) } && !deleteButton.frame.contains(point))
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         if gestureRecognizer === imageDrag, !acceptsImageDrag(at: touch.location(in: self)) { return false }
-        if gestureRecognizer is UIPanGestureRecognizer { dragStart = touch.location(in: superview) }
         return true
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
@@ -90,7 +97,16 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
                            CGPoint(x: 0, y: bounds.midY), CGPoint(x: bounds.width, y: bounds.midY), CGPoint(x: bounds.midX, y: 0), CGPoint(x: bounds.midX, y: bounds.height)]
             handle.frame = CGRect(x: centers[corner].x - 22, y: centers[corner].y - 22, width: 44, height: 44)
         }
-        deleteButton.frame = CGRect(x: bounds.width - 44, y: -50, width: 44, height: 44)
+        // Outside the image, above or below a corner, clear of every 44 pt handle; the first spot inside the viewport wins.
+        let w = bounds.width, h = bounds.height
+        let spots = [CGPoint(x: w + 2, y: -68), CGPoint(x: -46, y: -68), CGPoint(x: w + 2, y: h + 24), CGPoint(x: -46, y: h + 24)]
+        var origin = spots[0]
+        if let superview {
+            let viewport = convert(superview.bounds, from: superview)
+            origin = spots.first { viewport.contains(CGRect(origin: $0, size: CGSize(width: 44, height: 44))) } ?? spots[0]
+        }
+        deleteButton.frame = CGRect(origin: origin, size: CGSize(width: 44, height: 44))
+        deleteBadge.frame = CGRect(x: 11, y: 11, width: 22, height: 22); deleteBadge.layer.shadowPath = UIBezierPath(ovalIn: deleteBadge.bounds).cgPath
     }
     func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
@@ -105,72 +121,100 @@ final class ImageHandlesView: UIView, UIContextMenuInteractionDelegate, UIGestur
     @objc private func dragImage(_ gesture: UIPanGestureRecognizer) {
         guard editsDirectly else { if gesture.state == .began { selected?() }; return }
         guard item.isLocked != true else { return }
-        if gesture.state == .began { initial = frame; selectImage(); Diagnostics.shared.record("image.drag.begin", ["image": item.id.uuidString]) }
-        let point = gesture.location(in: superview)
-        let delta = CGPoint(x: point.x - dragStart.x, y: point.y - dragStart.y)
-        frame.origin = CGPoint(x: initial.minX + delta.x, y: initial.minY + delta.y)
-        if gesture.state == .ended {
-            Diagnostics.shared.record("image.drag.end", ["dx": String(Double(delta.x)), "dy": String(Double(delta.y)), "zoom": String(Double(zoom))])
-            moveImage(by: CGPoint(x: delta.x / zoom, y: delta.y / zoom))
-        } else if gesture.state == .cancelled { frame = initial; Diagnostics.shared.record("image.drag.cancel") }
+        if gesture.state == .began { begin("image.drag"); Diagnostics.shared.record("image.drag.begin", ["image": item.id.uuidString]) }
+        let t = gesture.translation(in: superview)
+        let proposed = Self.moved(start, by: CGPoint(x: t.x / zoom, y: t.y / zoom), page: pageSize)
+        finish(gesture, proposed: proposed, event: "image.drag")
+    }
+    @objc private func scale(_ gesture: UIPanGestureRecognizer) {
+        guard item.isLocked != true, let corner = gesture.view?.tag else { return }
+        if gesture.state == .began { begin("image.resize") }
+        let t = gesture.translation(in: superview)
+        let proposed: PageElement
+        if corner >= 4 {
+            proposed = Self.sided(start, side: corner, by: (corner < 6 ? t.x : t.y) / zoom, page: pageSize, zoom: zoom)
+        } else {
+            // Project the drag on the diagonal so the opposite corner stays put and the aspect ratio holds.
+            let dx = corner % 2 == 0 ? -t.x : t.x, dy = corner < 2 ? -t.y : t.y
+            let factor = 1 + (dx * initial.width + dy * initial.height) / max(1, initial.width * initial.width + initial.height * initial.height)
+            proposed = Self.scaled(start, by: factor, corner: corner, page: pageSize, zoom: zoom)
+        }
+        finish(gesture, proposed: proposed, event: "image.resize")
+    }
+    private func begin(_ monitor: String) {
+        start = item; initial = unrotatedFrame; selectImage(); FrameMonitor.shared.begin(monitor)
+    }
+    /// The live frame is the exact clamped result that will be saved, so nothing jumps on release.
+    private func finish(_ gesture: UIPanGestureRecognizer, proposed: PageElement, event: String) {
+        switch gesture.state {
+        case .began, .changed: show(proposed)
+        case .ended:
+            FrameMonitor.shared.end()
+            show(proposed)
+            Diagnostics.shared.record("\(event).end", ["dx": String(Double(proposed.x - start.x)), "dy": String(Double(proposed.y - start.y)),
+                                                       "w": String(Double(proposed.width)), "h": String(Double(proposed.height)), "zoom": String(Double(zoom))])
+            if proposed != start { item = proposed; changed?(proposed) }
+        default:
+            FrameMonitor.shared.end(); show(start); Diagnostics.shared.record("\(event).cancel")
+        }
+    }
+    private func show(_ proposed: PageElement) {
+        place(CGRect(x: initial.minX + (proposed.x - start.x) * zoom, y: initial.minY + (proposed.y - start.y) * zoom,
+                     width: proposed.width * zoom, height: proposed.height * zoom))
     }
     func moveImage(by delta: CGPoint) {
-        guard item.isLocked != true, delta.x.isFinite, delta.y.isFinite else { return }
-        item.x = min(max(0, item.x + delta.x), max(0, pageSize.width - item.width))
-        item.y = min(max(0, item.y + delta.y), max(0, pageSize.height - item.height))
-        changed?(item)
+        guard item.isLocked != true else { return }
+        item = Self.moved(item, by: delta, page: pageSize); changed?(item)
     }
     func resizeImage(by factor: CGFloat, corner: Int = 3) {
-        guard item.isLocked != true, factor.isFinite, item.width > 0, item.height > 0 else { return }
+        guard item.isLocked != true else { return }
+        item = Self.scaled(item, by: factor, corner: corner, page: pageSize, zoom: zoom); changed?(item)
+    }
+    func resizeSide(_ side: Int, by delta: CGFloat) {
+        guard item.isLocked != true else { return }
+        item = Self.sided(item, side: side, by: delta, page: pageSize, zoom: zoom); changed?(item)
+    }
+    static func moved(_ source: PageElement, by delta: CGPoint, page: CGSize) -> PageElement {
+        guard delta.x.isFinite, delta.y.isFinite else { return source }
+        var item = source
+        item.x = min(max(0, item.x + delta.x), max(0, page.width - item.width))
+        item.y = min(max(0, item.y + delta.y), max(0, page.height - item.height))
+        return item
+    }
+    static func scaled(_ source: PageElement, by factor: CGFloat, corner: Int, page: CGSize, zoom: CGFloat) -> PageElement {
+        guard factor.isFinite, source.width > 0, source.height > 0 else { return source }
+        var item = source
         let left = corner % 2 == 0, top = corner < 2
         let right = item.x + item.width, bottom = item.y + item.height
-        let limit = min((left ? right : pageSize.width - item.x) / item.width, (top ? bottom : pageSize.height - item.y) / item.height)
+        let limit = min((left ? right : page.width - item.x) / item.width, (top ? bottom : page.height - item.y) / item.height)
         let minimum = min(44 / max(min(item.width, item.height) * zoom, 1), limit)
         let value = max(minimum, min(max(0.01, factor), limit))
         item.width *= value; item.height *= value
         if left { item.x = right - item.width }
         if top { item.y = bottom - item.height }
-        changed?(item)
+        return item
     }
-    func resizeSide(_ side: Int, by delta: CGFloat) {
-        guard item.isLocked != true, delta.isFinite else { return }
+    static func sided(_ source: PageElement, side: Int, by delta: CGFloat, page: CGSize, zoom: CGFloat) -> PageElement {
+        guard delta.isFinite else { return source }
+        var item = source
         let minimum = 44 / max(zoom, 0.01)
         switch side {
         case 4:
             let right = item.x + item.width
             item.x = min(max(0, item.x + delta), max(0, right - minimum)); item.width = right - item.x
-        case 5: item.width = min(max(minimum, item.width + delta), pageSize.width - item.x)
+        case 5: item.width = min(max(minimum, item.width + delta), page.width - item.x)
         case 6:
             let bottom = item.y + item.height
             item.y = min(max(0, item.y + delta), max(0, bottom - minimum)); item.height = bottom - item.y
-        case 7: item.height = min(max(minimum, item.height + delta), pageSize.height - item.y)
-        default: return
+        case 7: item.height = min(max(minimum, item.height + delta), page.height - item.y)
+        default: break
         }
-        changed?(item)
+        return item
     }
-    @objc private func scale(_ gesture: UIPanGestureRecognizer) {
-        guard item.isLocked != true, let corner = gesture.view?.tag else { return }
-        if gesture.state == .began { initial = frame; selectImage() }
-        let point = gesture.location(in: superview)
-        let delta = CGPoint(x: point.x - dragStart.x, y: point.y - dragStart.y)
-        if corner >= 4 {
-            var preview = initial
-            switch corner {
-            case 4: preview.origin.x += delta.x; preview.size.width -= delta.x
-            case 5: preview.size.width += delta.x
-            case 6: preview.origin.y += delta.y; preview.size.height -= delta.y
-            default: preview.size.height += delta.y
-            }
-            if preview.width >= 44 && preview.height >= 44 { frame = preview }
-            if gesture.state == .ended { resizeSide(corner, by: (corner < 6 ? delta.x : delta.y) / zoom) }
-            else if gesture.state == .cancelled { frame = initial }
-            return
-        }
-        let dx = corner % 2 == 0 ? -delta.x : delta.x, dy = corner < 2 ? -delta.y : delta.y
-        let factor = max(0.01, 1 + (dx * initial.width + dy * initial.height) / max(1, initial.width * initial.width + initial.height * initial.height))
-        let size = CGSize(width: initial.width * factor, height: initial.height * factor)
-        frame = CGRect(x: corner % 2 == 0 ? initial.maxX - size.width : initial.minX, y: corner < 2 ? initial.maxY - size.height : initial.minY, width: size.width, height: size.height)
-        if gesture.state == .ended { resizeImage(by: factor, corner: corner) }
-        else if gesture.state == .cancelled { frame = initial }
+    private var unrotatedFrame: CGRect { CGRect(x: center.x - bounds.width / 2, y: center.y - bounds.height / 2, width: bounds.width, height: bounds.height) }
+    private func place(_ rect: CGRect) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        bounds.size = rect.size; center = CGPoint(x: rect.midX, y: rect.midY)
+        CATransaction.commit()
     }
 }

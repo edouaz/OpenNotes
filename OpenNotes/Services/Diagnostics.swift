@@ -1,4 +1,56 @@
+import QuartzCore
 import Foundation
+import os
+
+// Signposts for Instruments (os_signpost track "fr.opennotes / perf") and XCTOSSignpostMetric.
+// Use `let end = Perf.begin("name"); defer { end() }`; names are StaticString, so they cost nothing when not profiling.
+enum Perf {
+    static let signposter = OSSignposter(subsystem: "fr.opennotes", category: "perf")
+    static func begin(_ name: StaticString) -> () -> Void {
+        let state = signposter.beginInterval(name, id: signposter.makeSignpostID())
+        return { signposter.endInterval(name, state) }
+    }
+    @discardableResult static func measure<T>(_ name: StaticString, _ body: () throws -> T) rethrows -> T {
+        let end = begin(name); defer { end() }
+        return try body()
+    }
+}
+
+/// Frames longer than 1.5× the display interval while one gesture runs, logged as one event when it ends.
+/// Main thread only; one gesture at a time (a new `begin` closes the previous one).
+final class FrameMonitor {
+    static let shared = FrameMonitor()
+    private var link: CADisplayLink?
+    private var name = ""
+    private var started: CFTimeInterval = 0, last: CFTimeInterval = 0, worst: CFTimeInterval = 0
+    private var frames = 0, hitches = 0
+    func begin(_ name: String) {
+        end()
+        guard Diagnostics.shared.enabled, AppPreferences.measureFrames else { return }   // a display link per gesture costs battery; only for diagnostics
+        self.name = name; started = CACurrentMediaTime(); last = 0; worst = 0; frames = 0; hitches = 0
+        let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func end(_ fields: [String: String] = [:]) {
+        guard let link else { return }
+        link.invalidate(); self.link = nil
+        var report = fields
+        report["ms"] = String(Int((CACurrentMediaTime() - started) * 1000))
+        report["frames"] = String(frames); report["hitches"] = String(hitches)
+        report["worstFrameMs"] = String(Int(worst * 1000))
+        Diagnostics.shared.record("frames.\(name)", report)
+    }
+    @objc private func tick(_ link: CADisplayLink) {
+        if last > 0 {
+            let gap = link.timestamp - last
+            frames += 1; worst = max(worst, gap)
+            if gap > (link.targetTimestamp - link.timestamp) * 1.5 { hitches += 1 }
+        }
+        last = link.timestamp
+    }
+}
+func elapsedMilliseconds(since start: CFTimeInterval) -> String { String(Int((CACurrentMediaTime() - start) * 1000)) }
 
 final class Diagnostics {
     static let shared = Diagnostics(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("OpenNotesDiagnostics"))

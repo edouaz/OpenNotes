@@ -1,6 +1,10 @@
 import UIKit
 
 extension PageElement {
+    var stickyPath: CGPath {
+        let rect = CGRect(x: x, y: y, width: collapsed == true ? 44 : width, height: collapsed == true ? 44 : height)
+        return CGPath(roundedRect: rect, cornerWidth: stickyRadius, cornerHeight: stickyRadius, transform: nil)
+    }
     var objectTransform: CGAffineTransform {
         let rect = CGRect(x: x, y: y, width: collapsed == true ? 44 : width, height: collapsed == true ? 44 : height)
         let angle = rotation ?? 0, c = cos(angle), s = sin(angle)
@@ -12,6 +16,7 @@ extension PageElement {
         let rect = CGRect(x: x, y: y, width: collapsed == true ? 44 : width, height: collapsed == true ? 44 : height)
         let shape: CGPath
         switch kind {
+        case .stickyNote: shape = stickyPath
         case .ellipse: shape = CGPath(ellipseIn: rect, transform: nil)
         case .line, .arrow:
             let line = CGMutablePath()

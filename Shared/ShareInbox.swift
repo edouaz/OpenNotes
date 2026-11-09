@@ -16,7 +16,7 @@ enum ShareInbox {
         let size = values.fileSize ?? 0
         guard size > 0, size <= 150_000_000 else { throw CocoaError(.fileReadTooLarge) }
         let ext = source.pathExtension.lowercased()
-        guard ["pdf", "catnote", "png", "jpg", "jpeg", "heic", "tiff", "gif"].contains(ext) else { throw CocoaError(.fileReadUnknown) }
+        guard ["pdf", "opennote", "catnote", "png", "jpg", "jpeg", "heic", "tiff", "gif"].contains(ext) else { throw CocoaError(.fileReadUnknown) }
         let identifier = UUID().uuidString
         let temporary = folder.appendingPathComponent(".pending-" + identifier, isDirectory: true)
         let destination = folder.appendingPathComponent(identifier, isDirectory: true)

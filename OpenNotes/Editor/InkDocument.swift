@@ -13,6 +13,20 @@ struct InkStyle: Codable, Equatable {
     var inkAlgorithmVersion = 1
 }
 
+extension InkStyle {
+    private enum CodingKeys: String, CodingKey { case kind, width, pattern, sharpness, stabilization, pressureResponse, inkAlgorithmVersion }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decodeIfPresent(EditorToolSettings.PenStyle.self, forKey: .kind) ?? .ballpoint
+        width = try values.decode(Double.self, forKey: .width)
+        pattern = try values.decodeIfPresent(InkPattern.self, forKey: .pattern) ?? .solid
+        sharpness = try values.decodeIfPresent(Double.self, forKey: .sharpness) ?? 0
+        stabilization = try values.decodeIfPresent(Double.self, forKey: .stabilization) ?? 0
+        pressureResponse = try values.decodeIfPresent(Double.self, forKey: .pressureResponse) ?? 0.5
+        inkAlgorithmVersion = try values.decodeIfPresent(Int.self, forKey: .inkAlgorithmVersion) ?? 1
+    }
+}
+
 struct InkStrokePoint: Codable, Equatable {
     var location: CGPoint
     var timeOffset: TimeInterval
@@ -101,12 +115,29 @@ enum InkDocumentError: LocalizedError {
 struct InkStroke: Codable, Identifiable {
     var id: UUID
     var ink: InkInk
-    var path: InkStrokePath
+    var path: InkStrokePath { didSet { cache = GeometryCache() } }
     var rawSamples: [InkStrokePoint]
-    var style: InkStyle?
+    var style: InkStyle? { didSet { cache = GeometryCache() } }
     var transform: CGAffineTransform
     var randomSeed: UInt32
-    var vectorOutline: InkVectorPath?
+    var vectorOutline: InkVectorPath? { didSet { cache = GeometryCache() } }
+    // Painted geometry and bounds depend only on path, style and vectorOutline; reset when any changes.
+    // The painted path is also what the retained CALayer holds, so caching adds no second copy.
+    private final class GeometryCache {
+        private let lock = NSLock()
+        private var painted: CGPath?, bounds: CGRect?
+        func paintedPath(_ build: () -> CGPath) -> CGPath {
+            lock.lock(); defer { lock.unlock() }
+            if let painted { return painted }
+            let built = build(); painted = built; return built
+        }
+        func renderBounds(_ build: () -> CGRect) -> CGRect {
+            lock.lock(); defer { lock.unlock() }
+            if let bounds { return bounds }
+            let built = build(); bounds = built; return built
+        }
+    }
+    private var cache = GeometryCache()
     var parentID: UUID?
     var isLocked: Bool?
     var zIndex: Double?
@@ -121,7 +152,8 @@ struct InkStroke: Codable, Identifiable {
         let box = try decoder.container(keyedBy: CodingKeys.self)
         id = try box.decode(UUID.self, forKey: .id); ink = try box.decode(InkInk.self, forKey: .ink)
         path = try box.decode(InkStrokePath.self, forKey: .path)
-        rawSamples = try box.decode([InkStrokePoint].self, forKey: .rawSamples)
+        // Omitted when identical to `path` (the usual case): halves ink size. Older files always carry both.
+        rawSamples = try box.decodeIfPresent([InkStrokePoint].self, forKey: .rawSamples) ?? path.controlPoints
         style = try box.decodeIfPresent(InkStyle.self, forKey: .style)
         vectorOutline = try box.decodeIfPresent(InkVectorPath.self, forKey: .vectorOutline)
         parentID = try box.decodeIfPresent(UUID.self, forKey: .parentID)
@@ -141,7 +173,8 @@ struct InkStroke: Codable, Identifiable {
         try box.encodeIfPresent(isLocked, forKey: .isLocked)
         try box.encodeIfPresent(zIndex, forKey: .zIndex)
         try box.encode(id, forKey: .id); try box.encode(ink, forKey: .ink)
-        try box.encode(path, forKey: .path); try box.encode(rawSamples, forKey: .rawSamples)
+        try box.encode(path, forKey: .path)
+        if rawSamples != path.controlPoints { try box.encode(rawSamples, forKey: .rawSamples) }
         try box.encodeIfPresent(style, forKey: .style); try box.encode(randomSeed, forKey: .randomSeed)
         try box.encode([transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty].map(Double.init), forKey: .transform)
     }
@@ -159,14 +192,17 @@ struct InkStroke: Codable, Identifiable {
         return true
     }
     var renderBounds: CGRect {
-        if let vectorOutline { return vectorOutline.cgPath.boundingBoxOfPath.applying(transform) }
-        var result = CGRect.null
-        for point in path {
-            let radius = max(point.size.width, point.size.height) / 2
-            result = result.union(CGRect(x: point.location.x - radius, y: point.location.y - radius,
-                                        width: max(0.01, radius * 2), height: max(0.01, radius * 2)))
+        let local = cache.renderBounds {
+            if let vectorOutline { return vectorOutline.cgPath.boundingBoxOfPath }
+            var result = CGRect.null
+            for point in path {
+                let radius = max(point.size.width, point.size.height) / 2
+                result = result.union(CGRect(x: point.location.x - radius, y: point.location.y - radius,
+                                            width: max(0.01, radius * 2), height: max(0.01, radius * 2)))
+            }
+            return result
         }
-        return result.isNull ? .null : result.applying(transform)
+        return local.isNull ? .null : local.applying(transform)
     }
 
     // Patterns use accumulated distance, so sampling frequency cannot change their phase.
@@ -232,28 +268,35 @@ struct InkStroke: Codable, Identifiable {
         return pieces
     }
     var paintedPath: CGPath {
-        if let vectorOutline { return vectorOutline.cgPath }
-        let outline = CGMutablePath()
-        for points in paintedPaths() {
-            for point in points {
-                let radius = max(0.025, max(point.size.width, point.size.height) / 2)
-                outline.addEllipse(in: CGRect(x: point.location.x - radius, y: point.location.y - radius,
-                                             width: radius * 2, height: radius * 2))
-            }
-            for (a, b) in zip(points, points.dropFirst()) {
-                let dx = b.location.x - a.location.x, dy = b.location.y - a.location.y
-                let distance = hypot(dx, dy)
-                guard distance > 0.0001 else { continue }
-                let na = CGPoint(x: -dy / distance * a.size.width / 2, y: dx / distance * a.size.width / 2)
-                let nb = CGPoint(x: -dy / distance * b.size.width / 2, y: dx / distance * b.size.width / 2)
-                outline.move(to: CGPoint(x: a.location.x + na.x, y: a.location.y + na.y))
-                outline.addLine(to: CGPoint(x: a.location.x - na.x, y: a.location.y - na.y))
-                outline.addLine(to: CGPoint(x: b.location.x - nb.x, y: b.location.y - nb.y))
-                outline.addLine(to: CGPoint(x: b.location.x + nb.x, y: b.location.y + nb.y))
-                outline.closeSubpath()
-            }
+        cache.paintedPath {
+            if let vectorOutline { return vectorOutline.cgPath }
+            let outline = CGMutablePath()
+            for points in paintedPaths() { Self.addOutline(of: points, from: 0, to: outline) }
+            return outline
         }
-        return outline
+    }
+    // Round dot per sample plus a quad per segment. Winding numbers add, so appending only the new
+    // tail (live preview) yields the same fill as rebuilding the whole outline.
+    static func addOutline(of points: [InkStrokePoint], from start: Int, to outline: CGMutablePath) {
+        guard start < points.count else { return }
+        for point in points[start...] {
+            let radius = max(0.025, max(point.size.width, point.size.height) / 2)
+            outline.addEllipse(in: CGRect(x: point.location.x - radius, y: point.location.y - radius,
+                                         width: radius * 2, height: radius * 2))
+        }
+        for index in max(1, start)..<max(1, points.count) {
+            let a = points[index - 1], b = points[index]
+            let dx = b.location.x - a.location.x, dy = b.location.y - a.location.y
+            let distance = hypot(dx, dy)
+            guard distance > 0.0001 else { continue }
+            let na = CGPoint(x: -dy / distance * a.size.width / 2, y: dx / distance * a.size.width / 2)
+            let nb = CGPoint(x: -dy / distance * b.size.width / 2, y: dx / distance * b.size.width / 2)
+            outline.move(to: CGPoint(x: a.location.x + na.x, y: a.location.y + na.y))
+            outline.addLine(to: CGPoint(x: a.location.x - na.x, y: a.location.y - na.y))
+            outline.addLine(to: CGPoint(x: b.location.x - nb.x, y: b.location.y - nb.y))
+            outline.addLine(to: CGPoint(x: b.location.x + nb.x, y: b.location.y + nb.y))
+            outline.closeSubpath()
+        }
     }
     func draw(in context: CGContext) {
         guard !path.isEmpty else { return }

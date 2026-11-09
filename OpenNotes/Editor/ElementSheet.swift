@@ -94,7 +94,7 @@ struct ElementSheet: View {
             element.width = min(element.width, maxWidth)
             element.height = element.width * size.height / max(1, size.width)
             if element.height > maxHeight { element.width *= maxHeight / element.height; element.height = maxHeight }
-            let name = UUID().uuidString + ".png"
+            let name = UUID().uuidString + "." + ImportedImage.fileExtension(data)
             try await session.store.disk.write(data, name: name); element.resource = name
             var elements = page.elements ?? []
             if let index = elements.firstIndex(where: { $0.id == element.id }) { elements[index] = element } else { elements.append(element) }

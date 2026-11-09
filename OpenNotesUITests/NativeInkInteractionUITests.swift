@@ -2,6 +2,25 @@ import XCTest
 
 @MainActor
 final class NativeInkInteractionUITests: XCTestCase {
+    func testFingerModeLassoSelects() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-fingerDrawing", "YES", "-inkTool", "pen", "-openNotebooks", "()", "-activeNotebook", ""]
+        app.launch()
+        defer { app.terminate() }
+        if app.buttons["workspace.library"].waitForExistence(timeout: 3) { app.buttons["workspace.library"].tap() }
+        XCTAssertTrue(app.buttons["library.create"].waitForExistence(timeout: 10))
+        app.buttons["library.create"].tap(); XCTAssertTrue(app.buttons["library.new.confirm"].waitForExistence(timeout: 5)); app.buttons["library.new.confirm"].tap()
+        let canvas = app.scrollViews["editor.canvas"]
+        XCTAssertTrue(canvas.waitForExistence(timeout: 10))
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.3)).press(forDuration: 0.05, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)))
+        let lasso = app.buttons["editor.tool.lasso"]
+        XCTAssertTrue(lasso.waitForExistence(timeout: 5)); lasso.tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.2)).press(forDuration: 0.05, thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)))
+        // Copy is first in a nonempty selection; screenshot actions can be in the menu's overflow on iPhone.
+        let menu = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy")).firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "A finger-drawn lasso must produce a selection")
+    }
     func testFingerInkUndoRedoAndReopen() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -29,20 +48,22 @@ final class NativeInkInteractionUITests: XCTestCase {
         XCTAssertFalse(redo.isEnabled)
         capture(app, "Native UIView ink — redo restored")
 
-        app.buttons["editor.toolOptions"].tap()
-        let options = app.scrollViews["instrument.options.scroll"]
-        XCTAssertTrue(options.waitForExistence(timeout: 5))
-        let pattern = app.buttons["instrument.pattern"]
-        for _ in 0..<4 where !pattern.isHittable {
-            // Popover scroll views can report an empty XCTest visible frame; use the displayed bounds.
-            let frame = options.frame
-            let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: frame.maxY - 30))
-            let end = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: frame.minY + 30))
-            start.press(forDuration: 0.05, thenDragTo: end)
-        }
-        XCTAssertTrue(pattern.isHittable, "Native patterns must be reachable from the active toolbar")
-        capture(app, "Native pen options — pattern and stabilization")
+        app.buttons["editor.tool.pen"].tap()
+        XCTAssertTrue(app.sliders["Stabilization"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Ballpoint"].exists)
+        capture(app, "Native pen options — type and stabilization")
         app.buttons["Done"].tap()
+
+        let preset = app.buttons["editor.width.2"]
+        preset.tap()
+        if !app.sliders["Thickness"].waitForExistence(timeout: 1) { preset.tap() }
+        XCTAssertTrue(app.sliders["Thickness"].waitForExistence(timeout: 5))
+        let pattern = app.buttons["editor.pattern.dashed"]
+        XCTAssertTrue(pattern.isHittable, "Patterns must be reachable from a stroke preset")
+        pattern.tap()
+        XCTAssertTrue(pattern.isSelected)
+        capture(app, "Native stroke preset — pattern and thickness")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).tap()
 
         app.buttons["workspace.library"].tap()
         XCTAssertTrue(app.buttons["library.create"].waitForExistence(timeout: 10))

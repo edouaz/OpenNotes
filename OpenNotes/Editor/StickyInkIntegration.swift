@@ -1,9 +1,34 @@
 import UIKit
 
+extension NotePage {
+    var collapsedContentParents: Set<UUID> {
+        var hidden = Set((elements ?? []).filter { $0.kind == .stickyNote && $0.collapsed == true }.map(\.id))
+        var count = 0
+        while count != hidden.count {
+            count = hidden.count
+            for item in elements ?? [] where item.parentID.map({ hidden.contains($0) }) == true { hidden.insert(item.id) }
+        }
+        return hidden
+    }
+}
+
 extension InkDrawing {
     func visible(on page: NotePage) -> InkDrawing {
-        let hidden = Set((page.elements ?? []).filter { $0.kind == .stickyNote && $0.collapsed == true }.map(\.id))
-        return InkDrawing(strokes: strokes.filter { $0.parentID.map { !hidden.contains($0) } ?? true })
+        let hidden = page.collapsedContentParents
+        let occlusion = StickyInkOcclusion(page.elements ?? [])
+        return InkDrawing(strokes: strokes.filter { $0.parentID.map { !hidden.contains($0) } ?? true }.compactMap { occlusion.visible($0) })
+    }
+}
+
+extension InkStroke {
+    func clipped(to note: PageElement) -> InkStroke? {
+        var inverse = transform.inverted()
+        guard let boundary = note.visiblePath.copy(using: &inverse) else { return nil }
+        let clipped = paintedPath.intersection(boundary)
+        guard !clipped.isEmpty else { return nil }
+        var result = self
+        result.vectorOutline = InkVectorPath(clipped)
+        return result
     }
 }
 
@@ -11,21 +36,39 @@ extension InkDrawing {
 extension EditorSession {
     func attachingInk(_ replacement: InkDrawing) -> InkDrawing {
         let existing = Set(drawing.strokes.map(\.id))
-        let notes = (page?.elements ?? []).filter { $0.kind == .stickyNote && $0.collapsed != true && $0.isLocked != true }
+        let notes = Self.inkOwners(page?.elements ?? [])
         return InkDrawing(strokes: replacement.strokes.map { source in
-            guard !existing.contains(source.id), source.parentID == nil, let first = source.path.first else { return source }
+            guard !existing.contains(source.id), source.parentID == nil else { return source }
             var stroke = source
-            for note in notes.reversed() {
-                let rect = CGRect(x: note.x, y: note.y, width: note.width, height: note.height)
-                let inverse = stickyTransform(note).inverted()
-                let point = first.location.applying(source.transform).applying(inverse)
-                if rect.contains(point) {
-                    stroke.parentID = note.id
-                    break
-                }
-            }
+            stroke.parentID = Self.owner(of: source, among: notes)
             return stroke
         })
+    }
+
+    /// After a lasso move or transform, moved ink is re-homed with the drawing rule, so ink dragged onto a note
+    /// joins it and ink dragged off leaves it (otherwise it is clipped away and looks deleted). Ink whose note
+    /// moved with it keeps that note.
+    func reattachingMovedInk(_ strokes: [InkStroke], moved: Set<UUID>, elements: [PageElement], movedElements: Set<UUID>) -> [InkStroke] {
+        strokes.map { source in
+            guard moved.contains(source.id), source.parentID.map({ !movedElements.contains($0) }) ?? true else { return source }
+            var stroke = source
+            // Its current note stays a candidate even when locked, so a locked note never loses ink it already holds.
+            stroke.parentID = Self.owner(of: source, among: Self.inkOwners(elements, keeping: source.parentID))
+            return stroke
+        }
+    }
+
+    /// Open, unlocked notes, bottom to top.
+    private static func inkOwners(_ elements: [PageElement], keeping current: UUID? = nil) -> [PageElement] {
+        elements.enumerated().sorted {
+            ($0.element.zIndex ?? Double($0.offset)) < ($1.element.zIndex ?? Double($1.offset))
+        }.map(\.element).filter { $0.kind == .stickyNote && $0.collapsed != true && ($0.isLocked != true || $0.id == current) }
+    }
+    /// The topmost note under the stroke's first sample.
+    private static func owner(of stroke: InkStroke, among notes: [PageElement]) -> UUID? {
+        guard let first = stroke.path.first else { return stroke.parentID }
+        let point = first.location.applying(stroke.transform)
+        return notes.last { $0.visiblePath.contains(point) }?.id
     }
 
     func reconcileStickyInk(_ replacement: InkDrawing, previous: [PageElement], updated: [PageElement]) -> InkDrawing {
@@ -38,10 +81,8 @@ extension EditorSession {
             if old.x == new.x && old.y == new.y && old.width == new.width && old.height == new.height && old.rotation == new.rotation { return source }
             guard let original = originals[source.id], original.transform == source.transform,
                   original.path.controlPoints == source.path.controlPoints else { return source }
-            let scaleX = new.width / old.width, scaleY = new.height / old.height
             let transform = stickyTransform(old).inverted()
                 .concatenating(CGAffineTransform(translationX: -old.x, y: -old.y))
-                .concatenating(CGAffineTransform(scaleX: scaleX, y: scaleY))
                 .concatenating(CGAffineTransform(translationX: new.x, y: new.y))
                 .concatenating(stickyTransform(new))
             var stroke = source
@@ -60,21 +101,21 @@ extension EditorSession {
                 guard let new = notes[parent] else { return nil }
                 if old.x == new.x && old.y == new.y && old.width == new.width && old.height == new.height && (old.rotation ?? 0) == (new.rotation ?? 0) { return source }
                 if originals[source.id] == source {
-                    let sx = new.width / old.width, sy = new.height / old.height
                     let transform = stickyTransform(old).inverted()
                         .concatenating(CGAffineTransform(translationX: -old.x, y: -old.y))
-                        .concatenating(CGAffineTransform(scaleX: sx, y: sy))
                         .concatenating(CGAffineTransform(translationX: new.x, y: new.y))
                         .concatenating(stickyTransform(new))
                     let center = CGPoint(x: source.x + source.width / 2, y: source.y + source.height / 2).applying(transform)
-                    item.width *= sx; item.height *= sy
                     item.x = center.x - item.width / 2; item.y = center.y - item.height / 2
                     item.rotation = (source.rotation ?? 0) + (new.rotation ?? 0) - (old.rotation ?? 0)
                 }
             } else if attaching, item.parentID == nil, item.kind != .stickyNote, originals[item.id] != item {
-                for note in replacement.reversed() where note.kind == .stickyNote && note.collapsed != true && note.isLocked != true {
-                    let center = CGPoint(x: item.x + item.width / 2, y: item.y + item.height / 2).applying(stickyTransform(note).inverted())
-                    if CGRect(x: note.x, y: note.y, width: note.width, height: note.height).contains(center) { item.parentID = note.id; break }
+                let ordered = replacement.enumerated().sorted {
+                    ($0.element.zIndex ?? Double($0.offset)) > ($1.element.zIndex ?? Double($1.offset))
+                }.map(\.element)
+                for note in ordered where note.kind == .stickyNote && note.collapsed != true && note.isLocked != true {
+                    let center = CGPoint(x: item.x + item.width / 2, y: item.y + item.height / 2)
+                    if note.visiblePath.contains(center) { item.parentID = note.id; break }
                 }
             }
             return item

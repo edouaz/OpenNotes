@@ -41,7 +41,7 @@ final class DesignInteractionTests: XCTestCase {
         XCTAssertEqual(app.buttons["library.select"].label, "Select")
         XCTAssertFalse(app.buttons["library.move"].exists)
         app.buttons[notebook].tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10), "Tapping a notebook must open it after changing the filter")
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10), "Tapping a notebook must open it after changing the filter")
         screenshot("Notebook opened after filter change")
     }
 
@@ -61,7 +61,7 @@ final class DesignInteractionTests: XCTestCase {
     func testInstrumentSettingsAndCaptureActions() throws {
         let notebook = try createNotebook()
         app.buttons[notebook].tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
         screenshot("Editor before settings")
         for label in ["Pen", "Highlighter", "Eraser", "Lasso", "Instrument settings"] {
             XCTAssertGreaterThanOrEqual(app.buttons[label].frame.width, 44)
@@ -72,7 +72,7 @@ final class DesignInteractionTests: XCTestCase {
         XCTAssertTrue(app.sliders["Stroke width"].isHittable)
         screenshot("Instrument settings")
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["editor.insert"].isHittable)
+        XCTAssertTrue(app.buttons["editor.actions"].isHittable)
 
         openPageCapture()
         for identifier in ["capture.copy", "capture.insert", "capture.share"] {
@@ -80,7 +80,7 @@ final class DesignInteractionTests: XCTestCase {
         }
         screenshot("Capture before copying")
         app.buttons["capture.copy"].tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 5))
         waitUntilDismissed(app.buttons["capture.copy"])
         screenshot("Editor after copying")
 
@@ -91,10 +91,10 @@ final class DesignInteractionTests: XCTestCase {
         screenshot("Capture placement before finishing")
         done.tap()
         XCTAssertFalse(done.exists)
-        XCTAssertTrue(app.buttons["editor.insert"].isHittable)
+        XCTAssertTrue(app.buttons["editor.actions"].isHittable)
         screenshot("Editor after finishing placement")
 
-        app.buttons["editor.insert"].tap()
+        app.buttons["editor.actions"].tap()
         app.buttons["Crop / manage images"].tap()
         XCTAssertTrue(app.buttons["Edit image 1"].waitForExistence(timeout: 5))
         app.buttons["Edit image 1"].tap()
@@ -130,8 +130,8 @@ final class DesignInteractionTests: XCTestCase {
     func testAnnotationEditingDoesNotDeleteTheRow() throws {
         let notebook = try createNotebook()
         app.buttons[notebook].tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10))
-        app.buttons["editor.insert"].tap()
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
+        app.buttons["editor.actions"].tap()
         app.buttons["editor.sticky.add"].tap()
         let text = app.textViews["Sticky note text"]
         XCTAssertTrue(text.waitForExistence(timeout: 5))
@@ -220,10 +220,10 @@ final class DesignInteractionTests: XCTestCase {
         XCTAssertFalse(app.buttons["library.move"].exists)
         reveal(note, tappingCenter: true)
         note.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
         waitUntilDismissed(app.keyboards.firstMatch)
 
-        app.buttons["editor.insert"].tap()
+        app.buttons["editor.actions"].tap()
         reveal(app.buttons["Capture an area"])
         app.buttons["Capture an area"].tap()
         let done = app.buttons["editor.mode.done"]
@@ -234,7 +234,7 @@ final class DesignInteractionTests: XCTestCase {
         screenshot("AX5 capture mode before cancellation")
         done.tap()
         XCTAssertFalse(done.exists)
-        XCTAssertTrue(app.buttons["editor.insert"].isHittable)
+        XCTAssertTrue(app.buttons["editor.actions"].isHittable)
 
         openPageCapture()
         for identifier in ["capture.copy", "capture.insert", "capture.share"] {
@@ -248,7 +248,7 @@ final class DesignInteractionTests: XCTestCase {
         let copy = app.buttons["capture.copy"]
         reveal(copy, towardTop: true)
         copy.tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 5))
         waitUntilDismissed(copy)
         screenshot("AX5 editor after copying")
     }
@@ -329,7 +329,7 @@ final class DesignInteractionTests: XCTestCase {
         screenshot("Notebook restored in its subfolder")
         reveal(note, tappingCenter: true)
         note.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
     }
 
     func testSixTabsRestoreActiveAndCloseByName() throws {
@@ -343,7 +343,7 @@ final class DesignInteractionTests: XCTestCase {
         }
         let first = try XCTUnwrap(entries.first), last = try XCTUnwrap(entries.last)
         reveal(app.buttons[last.id]); app.buttons[last.id].tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
         let firstTab = app.buttons[first.title], lastTab = app.buttons[last.title]
         let tabs = app.scrollViews.containing(.button, identifier: first.title).firstMatch
         XCTAssertTrue(tabs.waitForExistence(timeout: 5), "This flow requires visible tabs on an iPad at regular size")
@@ -368,7 +368,7 @@ final class DesignInteractionTests: XCTestCase {
             waitForSelectedTab(tab)
         }
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
         waitForSelectedTab(lastTab)
         for entry in entries { XCTAssertTrue(app.buttons[entry.title].exists) }
         screenshot("Active tab visible after restoration")
@@ -432,7 +432,7 @@ final class DesignInteractionTests: XCTestCase {
         reveal(create, towardTop: true)
         create.tap()
         XCTAssertTrue(app.buttons["library.new.confirm"].waitForExistence(timeout: 5)); app.buttons["library.new.confirm"].tap()
-        XCTAssertTrue(app.buttons["editor.insert"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 10))
         app.buttons["workspace.library"].tap()
         XCTAssertTrue(app.buttons["library.select"].waitForExistence(timeout: 10))
         let created = notebooks.matching(NSPredicate(format: "NOT (identifier IN %@)", argumentArray: [Array(previous)])).firstMatch
@@ -492,7 +492,7 @@ final class DesignInteractionTests: XCTestCase {
     }
 
     private func openPageCapture() {
-        app.buttons["editor.insert"].tap()
+        app.buttons["editor.actions"].tap()
         reveal(app.buttons["Capture entire page"])
         app.buttons["Capture entire page"].tap()
         XCTAssertTrue(app.navigationBars["Capture"].waitForExistence(timeout: 10))

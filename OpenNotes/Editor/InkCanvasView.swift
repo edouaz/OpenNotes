@@ -35,6 +35,8 @@ struct InkSampleBuffer {
     private(set) var samples: [InkStrokePoint] = []
     private(set) var predictions: [InkStrokePoint] = []
     private var estimates: [Int: Int] = [:]
+    // Bumped when an earlier sample is revised, so incremental consumers know to restart.
+    private(set) var revision = 0
     mutating func append(_ sample: InkStrokePoint, estimate: Int? = nil) {
         guard sample.location.x.isFinite, sample.location.y.isFinite, sample.timeOffset.isFinite,
               sample.timeOffset >= 0, sample.force.isFinite else { return }
@@ -52,6 +54,7 @@ struct InkSampleBuffer {
         // Keep the measured chronology when UIKit updates only estimated properties.
         var revised = sample; revised.timeOffset = samples[index].timeOffset
         samples[index] = revised
+        revision += 1
         return true
     }
     mutating func predict(_ samples: [InkStrokePoint]) { predictions = samples }
@@ -82,14 +85,20 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
     var drawingPolicy = DrawingPolicy.pencilOnly
     var selectedTool = DrawingToolKind.pen
     var settings = EditorToolSettings()
-    var tool: InkTool = InkInkingTool(.pen, color: .black, width: 3)
+    var tool: InkTool = InkInkingTool(.pen, color: .black, width: 3) {
+        didSet {
+            if oldValue is InkEraserTool && !(tool is InkEraserTool) { cancelStroke() }
+        }
+    }
     var isRulerActive = false
     var hiddenStrokeIDs: Set<UUID> = [] { didSet { inkContentView.setHiddenStrokes(hiddenStrokeIDs) } }
+    var occludingNotes: [PageElement] = [] { didSet { inkContentView.setOccludingNotes(occludingNotes) } }
     var onEraserEnded: (() -> Void)?
     var lockedParentIDs: Set<UUID> = []
     private var eraseIndex: InkSpatialIndex?
     private var eraseSources: [UUID: InkStroke] = [:]
     private var eraseEdits: [UUID: [InkStroke]] = [:]
+    private var eraseBounds: [UUID: CGRect] = [:]
     private var erasedSampleCount = 0
     private let history = UndoManager()
     override var undoManager: UndoManager? { history }
@@ -112,6 +121,14 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
     }
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { inkContentView }
     var hasActiveStroke: Bool { activeTouch != nil }
+    // A finger stroke must stay interruptible: its second finger starts two-finger navigation.
+    var hasActivePencilStroke: Bool { activeTouch?.type == .pencil }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer, hasActivePencilStroke {
+            Diagnostics.shared.record("gesture.blockedByPencil", ["gesture": "canvasPan"]); return false
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
     private var activeTouch: UITouch?
     private var buffer = InkSampleBuffer()
     private var startedAt: TimeInterval = 0
@@ -128,6 +145,10 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
     private var awaitingCircle = false
     private var circleStart = CGPoint.zero
     private var pendingEstimateStroke: InkStroke?
+    // Incremental live-preview state: measured samples are processed once, only predictions are redone per event.
+    private var live: StrokeProcessing.Live?
+    private var liveFed = 0, liveRevision = 0
+    private var liveOutline = CGMutablePath(), liveOutlineCount = 0
     private let hoverLayer = CAShapeLayer()
     private let circleHold = UILongPressGestureRecognizer()
 
@@ -137,7 +158,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         delegate = self
         delaysContentTouches = false
         panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-        panGestureRecognizer.minimumNumberOfTouches = 2
+        panGestureRecognizer.minimumNumberOfTouches = 1
         inkContentView.owner = self; addSubview(inkContentView)
         circleHold.minimumPressDuration = 0.55
         circleHold.addTarget(self, action: #selector(circlePressed(_:)))
@@ -149,6 +170,11 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         hoverLayer.fillColor = UIColor.clear.cgColor
         hoverLayer.strokeColor = UIColor.label.cgColor
         hoverLayer.lineWidth = 0.7
+        hoverLayer.shadowColor = UIColor.white.cgColor
+        hoverLayer.shadowOpacity = 1
+        hoverLayer.shadowRadius = 1
+        hoverLayer.shadowOffset = .zero
+        hoverLayer.zPosition = 1_000_000_000
         hoverLayer.isHidden = true
         inkContentView.layer.addSublayer(hoverLayer)
         NotificationCenter.default.addObserver(self, selector: #selector(interrupted), name: UIApplication.willResignActiveNotification, object: nil)
@@ -160,13 +186,14 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
     func cancelActiveStroke() { cancelStroke() }
     func cancelStroke() {
         let hadTouch = activeTouch != nil
+        if hadTouch { FrameMonitor.shared.end(["result": "cancelled", "input": activeTouch?.type == .pencil ? "pencil" : "finger"]) }
         activeTouch = nil; awaitingCircle = false
         holdTimer?.invalidate(); holdTimer = nil
         heldAdjustment = nil; heldPoints = nil; capturedInk = nil; capturedEraser = nil
-        buffer.cancel(); pendingEstimateStroke = nil
-        eraseIndex = nil; eraseSources = [:]; eraseEdits = [:]; erasedSampleCount = 0
+        buffer.cancel(); pendingEstimateStroke = nil; live = nil
+        eraseIndex = nil; eraseSources = [:]; eraseEdits = [:]; eraseBounds = [:]; erasedSampleCount = 0
         inkContentView.clearErasurePreview()
-        inkContentView.preview.path = nil; hoverLayer.isHidden = true
+        inkContentView.endPreview(); hoverLayer.isHidden = true
         if hadTouch { inkDelegate?.canvasViewDidEndUsingTool(self) }
     }
     func accepts(_ type: UITouch.TouchType) -> Bool {
@@ -181,7 +208,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         let point = touch.location(in: inkContentView)
         guard inkContentView.bounds.contains(point) else { return }
         activeTouch = touch; startedAt = touch.timestamp; createdAt = Date(); strokeID = UUID()
-        buffer.cancel(); pendingEstimateStroke = nil
+        buffer.cancel(); pendingEstimateStroke = nil; live = nil
         capturedSettings = settings; capturedTool = selectedTool
         capturedInk = tool as? InkInkingTool; capturedEraser = tool as? InkEraserTool
         if capturedEraser != nil {
@@ -189,16 +216,19 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
             eraseIndex = InkSpatialIndex(visible)
             eraseSources = Dictionary(uniqueKeysWithValues: visible.strokes.map { ($0.id, $0) })
             eraseEdits = [:]; erasedSampleCount = 0
+            eraseBounds = Dictionary(uniqueKeysWithValues: visible.strokes.map { ($0.id, $0.renderBounds) })
         }
         heldPoints = nil; heldAdjustment = nil
         hoverLayer.isHidden = true; lastStationary = point
-        awaitingCircle = canCircleLongPress?(point) == true
+        awaitingCircle = capturedInk != nil && canCircleLongPress?(point) == true
         circleStart = point
         if !awaitingCircle { beginDrawing(touch, event: event) }
     }
     private func beginDrawing(_ touch: UITouch, event: UIEvent?) {
         onStrokeBegan?()
         inkDelegate?.canvasViewDidBeginUsingTool(self)
+        if capturedInk != nil { inkContentView.clipPreview(startingAt: touch.location(in: inkContentView)) }
+        FrameMonitor.shared.begin(capturedEraser != nil ? "eraser" : "ink")
         collect(touch, event: event, predicting: false)
         showPreview()
         scheduleHold()
@@ -212,7 +242,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
             awaitingCircle = false; beginDrawing(activeTouch, event: event)
         }
         if let adjustment = heldAdjustment {
-            heldPoints = adjustment.points(at: location)
+            heldPoints = Self.locked(adjustment.points(at: location))
         } else {
             collect(activeTouch, event: event, predicting: true)
             if hypot(location.x - lastStationary.x, location.y - lastStationary.y) * zoomScale > 3 {
@@ -226,11 +256,12 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         defer {
             self.activeTouch = nil; holdTimer?.invalidate(); holdTimer = nil
             heldAdjustment = nil; heldPoints = nil; awaitingCircle = false
-            inkContentView.preview.path = nil
+            inkContentView.endPreview(); hoverLayer.isHidden = true
             inkDelegate?.canvasViewDidEndUsingTool(self)
         }
+        FrameMonitor.shared.end(["input": activeTouch.type == .pencil ? "pencil" : "finger", "samples": String(buffer.samples.count), "pageStrokes": String(drawing.strokes.count)])
         if awaitingCircle { return }
-        if let adjustment = heldAdjustment { heldPoints = adjustment.points(at: activeTouch.location(in: inkContentView)) }
+        if let adjustment = heldAdjustment { heldPoints = Self.locked(adjustment.points(at: activeTouch.location(in: inkContentView))) }
         else { collect(activeTouch, event: event, predicting: false) }
         buffer.clearPredictions()
         if capturedEraser != nil {
@@ -240,7 +271,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
                 inkContentView.clearErasurePreview()
                 commit(result, name: "Erase")
             }
-            eraseIndex = nil; eraseSources = [:]; eraseEdits = [:]; erasedSampleCount = 0
+            eraseIndex = nil; eraseSources = [:]; eraseEdits = [:]; eraseBounds = [:]; erasedSampleCount = 0
             onEraserEnded?()
         } else if let stroke = makeStroke(includePredictions: false) {
             let result = heldPoints == nil ? onCompletedStroke?(stroke) : nil
@@ -256,7 +287,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         let width = capturedInk?.width ?? capturedEraser?.width ?? 3
         let force: CGFloat = touch.type == .pencil && touch.maximumPossibleForce > 0
             ? min(1, max(0, touch.force / touch.maximumPossibleForce)) : 0.5
-        return InkStrokePoint(location: touch.location(in: inkContentView), timeOffset: max(0, touch.timestamp - startedAt),
+        return InkStrokePoint(location: touch.preciseLocation(in: inkContentView), timeOffset: max(0, touch.timestamp - startedAt),
                               size: CGSize(width: width, height: width), opacity: 1, force: force,
                               azimuth: touch.type == .pencil ? touch.azimuthAngle(in: inkContentView) : 0,
                               altitude: touch.type == .pencil ? touch.altitudeAngle : .pi / 2)
@@ -268,7 +299,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         for item in measured.sorted(by: { $0.timestamp < $1.timestamp }) {
             buffer.append(sample(item), estimate: item.estimationUpdateIndex?.intValue)
         }
-        if predicting { buffer.predict((event?.predictedTouches(for: touch) ?? []).map(sample)) }
+        if predicting, AppPreferences.pencilPrediction { buffer.predict((event?.predictedTouches(for: touch) ?? []).map(sample)) }
     }
     fileprivate func cancel(_ touches: Set<UITouch>) {
         guard let activeTouch, touches.contains(activeTouch) else { return }
@@ -287,6 +318,8 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
                 let corrected = makeStroke(includePredictions: false) {
             var corrected = corrected
             corrected.parentID = drawing.strokes[index].parentID
+            if let note = occludingNotes.first(where: { $0.id == corrected.parentID }),
+               let clipped = corrected.clipped(to: note) { corrected = clipped }
             var result = drawing; result.strokes[index] = corrected
             if let onEstimatedStrokeUpdate { onEstimatedStrokeUpdate(result) }
             else { drawing = result; inkDelegate?.canvasViewDrawingDidChange(self) }
@@ -319,9 +352,48 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
                              id: strokeID, tool: capturedTool, width: Double(ink.width), settings: processingSettings)
     }
     private func showPreview() {
-        if capturedEraser != nil { previewErasing(); return }
+        let end = Perf.begin(capturedEraser != nil ? "erase.preview" : "ink.preview"); defer { end() }
+        if let eraser = capturedEraser {
+            if let point = buffer.samples.last?.location {
+                showToolCursor(at: point, width: eraser.width + (capturedSettings.eraserMode == .standard ? 4 : 0), color: .darkGray, fill: .white.withAlphaComponent(0.12))
+            }
+            previewErasing(); return
+        }
+        if heldPoints == nil, !isRulerActive, let ink = capturedInk, showLivePreview(ink) { return }
         guard let stroke = makeStroke(includePredictions: true) else { return }
         inkContentView.show(stroke)
+    }
+    private func showLivePreview(_ ink: InkInkingTool) -> Bool {
+        guard !buffer.samples.isEmpty else { return false }
+        if live == nil || liveRevision != buffer.revision || liveFed > buffer.samples.count {
+            live = StrokeProcessing.Live(tool: capturedTool, width: Double(ink.width), settings: capturedSettings)
+            liveFed = 0; liveRevision = buffer.revision; liveOutline = CGMutablePath(); liveOutlineCount = 0
+        }
+        guard var measured = live else { return false }
+        for sample in buffer.samples[liveFed...] { measured.append(sample) }
+        liveFed = buffer.samples.count
+        live = measured
+        var tail = measured          // fork: predictions never touch the persistent filter state
+        for sample in buffer.predictions where sample.location.x.isFinite && sample.location.y.isFinite && sample.timeOffset.isFinite {
+            tail.append(sample)
+        }
+        let style = measured.style
+        let simple = style.pattern == .solid && style.sharpness == 0   // other styles depend on total length
+        let path: CGPath
+        if simple {
+            InkStroke.addOutline(of: measured.controls, from: liveOutlineCount, to: liveOutline)
+            liveOutlineCount = measured.controls.count
+            let extended = liveOutline.mutableCopy() ?? CGMutablePath()
+            InkStroke.addOutline(of: tail.controls, from: measured.controls.count, to: extended)
+            path = extended
+        } else {
+            var stroke = InkStroke(ink: InkInk(ink.inkType, color: ink.color),
+                                   path: InkStrokePath(controlPoints: tail.controls, creationDate: createdAt), rawSamples: [])
+            stroke.style = style
+            path = stroke.paintedPath
+        }
+        inkContentView.show(path: path, ink: InkInk(ink.inkType, color: ink.color))
+        return true
     }
     private func previewErasing() {
         guard let eraser = capturedEraser, let index = eraseIndex, buffer.samples.count > erasedSampleCount else { return }
@@ -331,27 +403,32 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         let radius = eraser.width / 2 + (capturedSettings.eraserMode == .standard ? 2 : 0)
         let bounds = points.reduce(CGRect.null) { $0.union(CGRect(x: $1.x - radius, y: $1.y - radius, width: radius * 2, height: radius * 2)) }
         for id in index.query(bounds) {
-            guard let source = eraseSources[id] else { continue }
+            // The grid is coarse (128 pt); skip strokes whose box the eraser sweep does not touch.
+            guard let source = eraseSources[id], eraseBounds[id]?.intersects(bounds) != false else { continue }
             let current = eraseEdits[id] ?? [source]
-            let erased = EraserEditing.erase(InkDrawing(strokes: current), along: points, width: Double(eraser.width),
+            let erased = inkContentView.eraseVisible(current, along: points, width: Double(eraser.width),
                 mode: capturedSettings.eraserMode, erasePen: capturedSettings.erasePen ?? true,
-                eraseHighlighter: capturedSettings.eraseHighlighter ?? true).strokes
+                eraseHighlighter: capturedSettings.eraseHighlighter ?? true)
             if erased.count == current.count && zip(erased, current).allSatisfy({ $0.id == $1.id && $0.vectorOutline == $1.vectorOutline && $0.path.controlPoints == $1.path.controlPoints }) { continue }
             eraseEdits[id] = erased
             inkContentView.previewErasure(of: source, with: erased)
         }
+    }
+    /// A held line being swung around resists leaving the horizontal and vertical.
+    private static func locked(_ points: [CGPoint]) -> [CGPoint] {
+        points.count == 2 ? ShapeRecognition.lockedLine(points[0], points[1], lock: AppPreferences.shapeAxisLock * .pi / 180) : points
     }
     private func scheduleHold() {
         holdTimer?.invalidate()
         guard capturedInk != nil, capturedSettings.shapeRecognitionEnabled, !isRulerActive else { return }
         holdTimer = Timer(timeInterval: 0.55, repeats: false) { [weak self] _ in
             guard let self, let touch = self.activeTouch, !self.awaitingCircle,
-                  let points = ShapeRecognition.recognize(self.buffer.samples.map(\.location)) else { return }
+                  let points = ShapeRecognition.recognize(self.buffer.samples.map(\.location), tolerance: AppPreferences.shapeTolerance, axisLock: AppPreferences.shapeAxisLock) else { return }
             let recognized = self.capturedSettings.shapeAngleSnap == true ? StrokeProcessing.snappedLine(points) : points
             self.heldPoints = recognized
             self.heldAdjustment = ShapeRecognition.Adjustment(points: recognized, pointer: touch.location(in: self.inkContentView))
             self.buffer.clearPredictions(); self.showPreview()
-            UISelectionFeedbackGenerator().selectionChanged()
+            if AppPreferences.shapeHaptics { UISelectionFeedbackGenerator().selectionChanged() }
         }
         if let holdTimer { RunLoop.main.add(holdTimer, forMode: .common) }
     }
@@ -360,18 +437,29 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         let point = gesture.location(in: inkContentView)
         if onCircleLongPress?(point) == true { cancelStroke() }
     }
-    @objc private func hovered(_ gesture: UIHoverGestureRecognizer) {
+    @objc func hovered(_ gesture: UIHoverGestureRecognizer) {
+        // Pencil hover ends on contact; the active eraser owns its cursor until pen-up.
+        guard activeTouch == nil else { return }
         guard #available(iOS 16.1, *),
-              activeTouch == nil, drawingGestureRecognizer.isEnabled, let ink = tool as? InkInkingTool,
+              drawingGestureRecognizer.isEnabled,
               gesture.state != .ended, gesture.state != .cancelled else { hoverLayer.isHidden = true; return }
         if #available(iOS 17.5, *), !UIPencilInteraction.prefersHoverToolPreview { hoverLayer.isHidden = true; return }
+        guard AppPreferences.hoverPreview else { hoverLayer.isHidden = true; return }
         let point = gesture.location(in: inkContentView)
         guard inkContentView.bounds.contains(point) else { hoverLayer.isHidden = true; return }
-        let radius = max(1 / max(0.1, zoomScale), ink.width / 2)
+        if let eraser = tool as? InkEraserTool {
+            showToolCursor(at: point, width: eraser.width + (settings.eraserMode == .standard ? 4 : 0), color: .darkGray, fill: .white.withAlphaComponent(0.12))
+        } else if let ink = tool as? InkInkingTool {
+            showToolCursor(at: point, width: max(2 / max(0.1, zoomScale), ink.width), color: ink.color)
+        } else { hoverLayer.isHidden = true }
+    }
+    func showToolCursor(at point: CGPoint, width: CGFloat, color: UIColor, fill: UIColor = .clear) {
+        let radius = width / 2
         CATransaction.begin(); CATransaction.setDisableActions(true)
         hoverLayer.path = CGPath(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2), transform: nil)
-        hoverLayer.strokeColor = ink.color.withAlphaComponent(0.8).cgColor
-        hoverLayer.lineWidth = 1 / max(0.1, zoomScale); hoverLayer.isHidden = false
+        hoverLayer.fillColor = fill.cgColor
+        hoverLayer.strokeColor = color.withAlphaComponent(0.8).cgColor
+        hoverLayer.lineWidth = 1.5 / max(0.1, zoomScale); hoverLayer.isHidden = false
         CATransaction.commit()
     }
 }
@@ -380,29 +468,96 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
 final class InkContentView: UIView, UIGestureRecognizerDelegate {
     weak var owner: InkCanvasView?
     let preview = CAShapeLayer()
-    private var committed: [UUID: CAShapeLayer] = [:]
+    // Consecutive same-colour pen strokes share one layer: thousands of per-stroke layers made the GPU
+    // composite every stroke each frame on long pages. Markers and masked strokes keep their own layer.
+    private final class InkRun {
+        let layer = CAShapeLayer()
+        var ids: [UUID] = []
+        var merged = false
+    }
+    private var runs: [InkRun] = []
+    private var runOf: [UUID: InkRun] = [:]
     private var installed: [UUID: InkStroke] = [:]
+    private var drawing = InkDrawing()
+    private var suppressed: Set<UUID> = []   // strokes whose erasure preview is shown instead
+    var committedLayerCount: Int { runs.count }
     private var erasureLayers: [UUID: CAShapeLayer] = [:]
     private var hiddenStrokeIDs: Set<UUID> = []
+    private struct NoteMaskKey: Equatable {
+        let id: UUID
+        let x, y, width, height: Double
+        let rotation: Double?
+        let stickyRadius: Double
+        let collapsed: Bool?
+        let zIndex: Double?
+        let order: Int
+    }
+    private struct ElementParentKey: Equatable {
+        let id: UUID
+        let parentID: UUID?
+    }
+    private var noteParentKeys: [ElementParentKey] = []
+    private var noteMaskKeys: [NoteMaskKey] = []
+    private var occlusion = StickyInkOcclusion([])
+    func setOccludingNotes(_ elements: [PageElement]) {
+        let keys = elements.enumerated().compactMap { index, item in
+            item.kind == .stickyNote ? NoteMaskKey(id: item.id, x: item.x, y: item.y, width: item.width, height: item.height,
+                                                  rotation: item.rotation, stickyRadius: item.stickyRadius, collapsed: item.collapsed, zIndex: item.zIndex, order: index) : nil
+        }
+        let parents = elements.map { ElementParentKey(id: $0.id, parentID: $0.parentID) }
+        guard keys != noteMaskKeys || parents != noteParentKeys else { return }
+        noteParentKeys = parents
+        noteMaskKeys = keys
+        occlusion = StickyInkOcclusion(elements)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        for id in erasureLayers.keys { if let stroke = installed[id] { erasureLayers[id]?.mask = occlusion.mask(for: stroke, worldCoordinates: true) } }
+        CATransaction.commit()
+        install(drawing, force: true)
+    }
     func setHiddenStrokes(_ ids: Set<UUID>) {
+        let changed = ids.symmetricDifference(hiddenStrokeIDs)
         hiddenStrokeIDs = ids
-        for (id, layer) in committed { layer.isHidden = ids.contains(id) || erasureLayers[id] != nil }
+        refresh(changed)
+    }
+    func eraseVisible(_ strokes: [InkStroke], along points: [CGPoint], width: Double, mode: EditorToolSettings.EraserMode,
+                      erasePen: Bool = true, eraseHighlighter: Bool = true) -> [InkStroke] {
+        strokes.flatMap { stroke -> [InkStroke] in
+            guard let visible = occlusion.visible(stroke) else { return [stroke] }
+            let whole = mode == .stroke || (mode == .intelligent && max(stroke.renderBounds.width, stroke.renderBounds.height) <= width)
+            let visibleMode: EditorToolSettings.EraserMode = mode == .intelligent && !whole ? .pixel : mode
+            let erased = EraserEditing.erase(InkDrawing(strokes: [visible]), along: points, width: width, mode: visibleMode,
+                                              erasePen: erasePen, eraseHighlighter: eraseHighlighter).strokes
+            if erased.count == 1, let result = erased.first, result.id == visible.id,
+               result.vectorOutline == visible.vectorOutline, result.path.controlPoints == visible.path.controlPoints { return [stroke] }
+            if whole { return [] }
+            guard visible.vectorOutline != stroke.vectorOutline else { return erased }
+            let hidden = stroke.paintedPath.subtracting(visible.paintedPath)
+            guard !hidden.isEmpty else { return erased }
+            var preserved = stroke
+            preserved.id = UUID()
+            preserved.vectorOutline = InkVectorPath(hidden)
+            return erased + [preserved]
+        }
     }
     func clearErasurePreview() {
         erasureLayers.values.forEach { $0.removeFromSuperlayer() }; erasureLayers = [:]
-        setHiddenStrokes(hiddenStrokeIDs)
+        let restored = suppressed; suppressed = []
+        refresh(restored)
     }
     func previewErasure(of source: InkStroke, with strokes: [InkStroke]) {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let shape = erasureLayers[source.id] ?? CAShapeLayer()
-        if shape.superlayer == nil { layer.addSublayer(shape); erasureLayers[source.id] = shape }
+        if shape.superlayer == nil {
+            layer.addSublayer(shape); erasureLayers[source.id] = shape
+            shape.mask = occlusion.mask(for: source, worldCoordinates: true)
+        }
         let path = CGMutablePath()
         for stroke in strokes { path.addPath(stroke.paintedPath, transform: stroke.transform) }
         shape.path = path
         shape.fillColor = source.ink.color.withAlphaComponent(source.ink.color.cgColor.alpha * (source.ink.inkType == .marker ? 0.3 : 1)).cgColor
-        shape.zPosition = committed[source.id]?.zPosition ?? 0
-        committed[source.id]?.isHidden = true
+        shape.zPosition = runOf[source.id]?.layer.zPosition ?? 0
         CATransaction.commit()
+        if suppressed.insert(source.id).inserted { refresh([source.id]) }
     }
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -410,28 +565,109 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
         layer.addSublayer(preview)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func install(_ drawing: InkDrawing) {
+    func install(_ drawing: InkDrawing, force: Bool = false) {
+        self.drawing = drawing
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        let ids = Set(drawing.strokes.map(\.id))
-        for id in committed.keys.filter({ !ids.contains($0) }) { committed.removeValue(forKey: id)?.removeFromSuperlayer(); installed[id] = nil }
-        for (order, stroke) in drawing.strokes.enumerated() {
-            let shape: CAShapeLayer
-            if let existing = committed[stroke.id] { shape = existing }
-            else { shape = CAShapeLayer(); committed[stroke.id] = shape; layer.insertSublayer(shape, below: preview) }
-            // The path object is cached until the immutable document stroke changes.
-            if let previous = installed[stroke.id], previous.path.controlPoints == stroke.path.controlPoints,
-               previous.style == stroke.style, previous.transform == stroke.transform, previous.vectorOutline == stroke.vectorOutline,
-               previous.ink.color.isEqual(stroke.ink.color), previous.ink.inkType == stroke.ink.inkType { }
-            else { configure(shape, stroke: stroke); installed[stroke.id] = stroke }
-            shape.zPosition = CGFloat(order)
-            shape.isHidden = hiddenStrokeIDs.contains(stroke.id)
+        defer { CATransaction.commit() }
+        // Plan runs. Boundaries come from each stroke's own id, so erasing or adding a stroke
+        // only rebuilds the run it belongs to, not every run after it.
+        var plan: [(ids: [UUID], merged: Bool)] = []
+        var mergeKey: (UIColor, InkInk.InkType)?
+        for stroke in drawing.strokes {
+            let mergeable = stroke.ink.inkType != .marker && !occlusion.masks(stroke)
+            if mergeable, let key = mergeKey, let last = plan.last, last.merged, last.ids.count < 96,
+               stroke.id.uuid.0 & 31 != 0, key.1 == stroke.ink.inkType, key.0.isEqual(stroke.ink.color) {
+                plan[plan.count - 1].ids.append(stroke.id)
+            } else {
+                plan.append(([stroke.id], mergeable))
+                mergeKey = mergeable ? (stroke.ink.color, stroke.ink.inkType) : nil
+            }
         }
-        preview.zPosition = CGFloat(drawing.strokes.count + 1)
+        let strokes = drawing.strokes.reduce(into: [UUID: InkStroke]()) { $0[$1.id] = $1 }
+        let changed = Set(drawing.strokes.compactMap { stroke -> UUID? in
+            guard let previous = installed[stroke.id], previous.path.controlPoints == stroke.path.controlPoints,
+                  previous.style == stroke.style, previous.transform == stroke.transform, previous.vectorOutline == stroke.vectorOutline,
+                  previous.parentID == stroke.parentID, previous.ink.color.isEqual(stroke.ink.color),
+                  previous.ink.inkType == stroke.ink.inkType else { return stroke.id }
+            return nil
+        })
+        installed = strokes
+        var reusable = Dictionary(runs.map { ($0.ids, $0) }, uniquingKeysWith: { first, _ in first })
+        var spare = runs.filter { reusable[$0.ids] !== $0 }
+        var next: [InkRun] = []
+        for entry in plan {
+            if !force, let run = reusable[entry.ids], run.merged == entry.merged, !entry.ids.contains(where: changed.contains) {
+                reusable[entry.ids] = nil; next.append(run); continue
+            }
+            let run = reusable.removeValue(forKey: entry.ids) ?? spare.popLast() ?? InkRun()
+            run.ids = entry.ids; run.merged = entry.merged
+            if run.layer.superlayer == nil { layer.insertSublayer(run.layer, below: preview) }
+            configure(run)
+            next.append(run)
+        }
+        for run in reusable.values { run.layer.removeFromSuperlayer() }
+        for run in spare where !next.contains(where: { $0 === run }) { run.layer.removeFromSuperlayer() }
+        runs = next
+        runOf = [:]
+        for (order, run) in runs.enumerated() {
+            run.layer.zPosition = CGFloat(order)
+            for id in run.ids { runOf[id] = run }
+        }
+        suppressed.formIntersection(strokes.keys)
+        preview.zPosition = CGFloat(runs.count + 1)
+    }
+    /// Rebuilds the runs holding these strokes after their hidden or suppressed state changed.
+    private func refresh(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        var seen: [ObjectIdentifier] = []
+        for id in ids {
+            guard let run = runOf[id], !seen.contains(ObjectIdentifier(run)) else { continue }
+            seen.append(ObjectIdentifier(run)); configure(run)
+        }
+        CATransaction.commit()
+    }
+    private func configure(_ run: InkRun) {
+        let visible = run.ids.filter { !hiddenStrokeIDs.contains($0) && !suppressed.contains($0) }.compactMap { installed[$0] }
+        if !run.merged, let stroke = run.ids.first.flatMap({ installed[$0] }) {
+            configure(run.layer, stroke: stroke)
+            run.layer.mask = occlusion.mask(for: stroke)
+            run.layer.isHidden = visible.isEmpty
+            return
+        }
+        let path = CGMutablePath()
+        for stroke in visible { path.addPath(stroke.paintedPath, transform: stroke.transform) }
+        run.layer.mask = nil
+        run.layer.path = path
+        run.layer.setAffineTransform(.identity)
+        if let stroke = run.ids.first.flatMap({ installed[$0] }) {
+            run.layer.fillColor = stroke.ink.color.withAlphaComponent(stroke.ink.color.cgColor.alpha * (stroke.ink.inkType == .marker ? 0.3 : 1)).cgColor
+        }
+        run.layer.fillRule = .nonZero
+        run.layer.isHidden = visible.isEmpty
+    }
+    // The preview shows what the commit will keep: attachment is decided by the first sample.
+    func clipPreview(startingAt point: CGPoint) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        preview.mask = occlusion.previewMask(startingAt: point, in: bounds)
+        CATransaction.commit()
+    }
+    func endPreview() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        preview.path = nil; preview.mask = nil
         CATransaction.commit()
     }
     func show(_ stroke: InkStroke) {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         configure(preview, stroke: stroke)
+        CATransaction.commit()
+    }
+    func show(path: CGPath, ink: InkInk) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        preview.path = path
+        preview.setAffineTransform(.identity)
+        preview.fillColor = ink.color.withAlphaComponent(ink.color.cgColor.alpha * (ink.inkType == .marker ? 0.3 : 1)).cgColor
+        preview.fillRule = .nonZero
         CATransaction.commit()
     }
     private func configure(_ shape: CAShapeLayer, stroke: InkStroke) {
@@ -441,8 +677,9 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
         shape.fillRule = .nonZero
     }
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if gestureRecognizer is UILongPressGestureRecognizer {
-            return owner?.canCircleLongPress?(gestureRecognizer.location(in: self)) == true
+        // UIKit also asks the touched view about its ancestors' recognizers (paste hold, lasso hold): only veto our own.
+        if gestureRecognizer is UILongPressGestureRecognizer, gestureRecognizer.view === self {
+            return owner?.tool is InkInkingTool && owner?.canCircleLongPress?(gestureRecognizer.location(in: self)) == true
         }
         return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }

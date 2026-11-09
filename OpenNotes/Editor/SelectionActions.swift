@@ -3,10 +3,11 @@ import UIKit
 @MainActor
 extension EditorSession {
     func pasteSelection(at point: CGPoint) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard let data = UIPasteboard.general.data(forPasteboardType: DocumentClipboard.selectionType) else { return false }
         guard !isReadOnly, await flush(), let page else { return true }
         do {
-            let (ink, elements, assets) = try DocumentClipboard.decode(data, on: page, at: point)
+            let (ink, elements, assets) = try DocumentClipboard.decode(data, on: page, at: point, centered: true)
             for (name, data) in assets { try await store.disk.write(data, name: name) }
             guard self.page?.id == page.id else { throw CocoaError(.userCancelled) }
             resources.merge(assets) { _, new in new }
@@ -17,12 +18,13 @@ extension EditorSession {
     }
 
     func selectionAction(_ action: PageSelectionAction, path: UIBezierPath) async {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
         guard !isReadOnly, await flush(), let page else { return }
-        let snapshot = SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
+        let snapshot = selectionSnapshot(page, path: path)
         guard !snapshot.isEmpty else { return }
         do {
             if action == .copySelection || action == .cutSelection || action == .duplicateSelection {
-                let payload = try DocumentClipboard.payload(page: page, drawing: canvas.drawing, path: path, settings: toolSettings, resources: resources)
+                let payload = try DocumentClipboard.payload(snapshot, resources: resources)
                 let data = try DocumentClipboard.encode(payload)
                 if action == .duplicateSelection {
                     let (ink, elements, assets) = try DocumentClipboard.decode(data, on: page, at: CGPoint(x: snapshot.bounds.minX + 20, y: snapshot.bounds.minY + 20))
@@ -91,9 +93,11 @@ extension EditorSession {
     }
 
     @discardableResult
-    func affineSelection(inside path: UIBezierPath, scale: CGFloat, rotation: CGFloat, scaleY: CGFloat? = nil, anchor: CGPoint? = nil) async -> Bool {
-        guard !isReadOnly, scale.isFinite, rotation.isFinite, (0.1...10).contains(scale), await flush(), let page else { return false }
-        let snapshot = SelectionMoveSnapshot(page: page, drawing: canvas.drawing, path: path, settings: toolSettings)
+    func affineSelection(inside path: UIBezierPath, scale: CGFloat, rotation: CGFloat, scaleY: CGFloat? = nil, anchor: CGPoint? = nil, durable: Bool = true) async -> Bool {
+        pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
+        let end = Perf.begin("lasso.affine"); defer { end() }
+        guard !isReadOnly, scale.isFinite, rotation.isFinite, (0.1...10).contains(scale), await prepareEdit(durable: durable), let page else { return false }
+        let snapshot = selectionSnapshot(page, path: path)
         guard !snapshot.isEmpty, !snapshot.containsLockedObjects else { return false }
         let sy = scaleY ?? scale
         guard sy.isFinite, (0.1...10).contains(sy) else { return false }
@@ -101,8 +105,14 @@ extension EditorSession {
         guard center.x.isFinite, center.y.isFinite else { return false }
         let a = cos(rotation) * scale, b = sin(rotation) * scale
         let c = -sin(rotation) * sy, d = cos(rotation) * sy
-        let transform = CGAffineTransform(a: a, b: b, c: c, d: d, tx: center.x - a * center.x - c * center.y, ty: center.y - b * center.x - d * center.y)
+        var transform = CGAffineTransform(a: a, b: b, c: c, d: d, tx: center.x - a * center.x - c * center.y, ty: center.y - b * center.x - d * center.y)
         let size = PageRenderer.size(page)
+        // Slide the result back onto the page instead of letting ink overflow or rejecting the whole transform.
+        // ponytail: conservative box of the rotated bounds; a tilted selection may stop a few points short of the edge.
+        let result = snapshot.bounds.applying(transform)
+        guard result.width <= size.width, result.height <= size.height else { return false }
+        transform = transform.concatenating(CGAffineTransform(translationX: max(0, -result.minX) - max(0, result.maxX - size.width),
+                                                              y: max(0, -result.minY) - max(0, result.maxY - size.height)))
         let elements = (page.elements ?? []).map { source -> PageElement in
             guard snapshot.elementIDs.contains(source.id) else { return source }
             var item = source
@@ -116,7 +126,8 @@ extension EditorSession {
         let ink = canvas.drawing.strokes.enumerated().map { index, stroke in
             snapshot.strokeIndices.contains(index) ? InkDrawing(strokes: [stroke]).transformed(using: transform).strokes[0] : stroke
         }
-        replaceContent(InkDrawing(strokes: ink), elements: elements, actionName: rotation == 0 ? "Resize selection" : "Rotate selection")
-        return await flush()
+        let reattached = reattachingMovedInk(ink, moved: snapshot.strokeIDs, elements: elements, movedElements: snapshot.elementIDs)
+        replaceContent(InkDrawing(strokes: reattached), elements: elements, actionName: rotation == 0 ? "Resize selection" : "Rotate selection")
+        return durable ? await flush() : true
     }
 }

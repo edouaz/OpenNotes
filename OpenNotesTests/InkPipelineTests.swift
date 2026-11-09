@@ -48,7 +48,9 @@ final class InkPipelineTests: XCTestCase {
         var settings = EditorToolSettings(); settings.rulerEnabled = true
         let source = stroke()
         let result = try XCTUnwrap(StrokeProcessing.process(source, tool: .marker, width: 3, settings: settings, shapeHeld: true))
-        XCTAssertEqual(result.path.map(\.location), source.path.map(\.location))
+        let freehand = try XCTUnwrap(StrokeProcessing.process(source, tool: .marker, width: 3, settings: settings, shapeHeld: false))
+        XCTAssertEqual(result.path.map(\.location), freehand.path.map(\.location))
+        XCTAssertEqual(result.path.count, source.path.count)
         XCTAssertNotNil(result.style)
     }
     func testLiveStabilizationKeepsPrefixAndReducesTremor() throws {
@@ -75,7 +77,9 @@ final class InkPipelineTests: XCTestCase {
         XCTAssertLessThan(jitter, rawJitter * 0.5)
         settings.stabilization = 0
         let direct = try XCTUnwrap(StrokeProcessing.process(drawing(40), tool: .pen, width: 3, settings: settings, shapeHeld: false))
-        XCTAssertEqual(direct.path.map(\.location), samples.map(\.location))
+        // 0 % keeps a light filter: close to the raw samples, but less jittery.
+        for (point, raw) in zip(direct.path, samples) { XCTAssertLessThan(hypot(point.location.x - raw.location.x, point.location.y - raw.location.y), 4) }
+        XCTAssertEqual(direct.path.first?.location, samples.first?.location)
     }
 
     func testPressureCanBeDisabledWithoutDiscardingRawMetadata() throws {
@@ -282,21 +286,6 @@ struct ToolCustomizationAndSelectionTests {
         preview.move(by: .zero)
         #expect(preview.foreground.frame == initial)
         #expect(page.elements == [note])
-    }
-
-    @Test func eraserCursorTracksPositionAndZoomWithoutConsumingNativeErasing() throws {
-        let canvas = InkCanvasView()
-        let view = PageScrollView(canvas: canvas)
-        view.eraserCursorEnabled = true; view.eraserCursorWidth = 24
-        view.showEraserCursor(at: CGPoint(x: 100, y: 80))
-        let circle = try #require(view.layer.sublayers?.compactMap { $0 as? CAShapeLayer }.first { $0.path?.boundingBox.midX == 100 })
-        #expect(circle.path?.boundingBox.width == max(6, 24 * canvas.zoomScale))
-        view.showEraserCursor(at: CGPoint(x: 120, y: 90))
-        #expect(circle.path?.boundingBox.midX == 120)
-        view.eraserCursorEnabled = false
-        #expect(circle.path == nil)
-        #expect(canvas.drawingGestureRecognizer.isEnabled)
-        view.detachInteractions(); view.pageTurn.detach()
     }
 
     @Test func fastSelectionPickupUsesContactOriginAndCancellationPreservesSelection() {

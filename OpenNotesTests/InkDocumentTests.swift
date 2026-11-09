@@ -28,6 +28,22 @@ final class InkDocumentTests: XCTestCase {
         XCTAssertEqual(decoded.transform, original.transform)
         XCTAssertEqual(saved.dataRepresentation(), source.dataRepresentation())
     }
+    func testRawSamplesAreOmittedWhenIdenticalAndLegacyFilesStillDecode() throws {
+        let plain = InkDrawing(strokes: [stroke(count: 50)])
+        var edited = stroke(count: 50); edited.rawSamples[3].force = 0.9
+        let plainJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: plain.encodedData()) as? [String: Any])
+        let editedJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: InkDrawing(strokes: [edited]).encodedData()) as? [String: Any])
+        XCTAssertNil((plainJSON["strokes"] as? [[String: Any]])?[0]["rawSamples"])
+        XCTAssertNotNil((editedJSON["strokes"] as? [[String: Any]])?[0]["rawSamples"])
+        // Older builds always wrote rawSamples: re-insert it and expect an identical drawing back.
+        var legacy = plainJSON
+        var strokes = try XCTUnwrap(legacy["strokes"] as? [[String: Any]])
+        strokes[0]["rawSamples"] = (strokes[0]["path"] as? [String: Any])?["controlPoints"]
+        legacy["strokes"] = strokes
+        let decoded = try InkDrawing(data: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(decoded.strokes[0].rawSamples, plain.strokes[0].rawSamples)
+        XCTAssertEqual(try decoded.encodedData(), try plain.encodedData())
+    }
     func testRejectsLegacyUnknownSchemaInvalidColorAndNonfiniteCoordinate() throws {
         XCTAssertThrowsError(try InkDrawing(data: Data([0, 1, 2, 3])))
         let data = InkDrawing(strokes: [stroke()]).dataRepresentation()

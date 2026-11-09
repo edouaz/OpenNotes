@@ -16,9 +16,10 @@ struct InkPreview: View {
                     .font(.caption).monospacedDigit()
                 Group {
                     if let image { Image(uiImage: image) }
-                    else { ProgressView().frame(width: InkPreviewSample.size.width, height: InkPreviewSample.size.height) }
+                    else { ProgressView() }
                 }
-                .frame(width: InkPreviewSample.size.width, height: InkPreviewSample.size.height)
+                .frame(width: InkPreviewSample.size.width, height: min(InkPreviewSample.size.height, max(72, snapshot.inkWidth + 16)))
+                .clipped()
                 .background(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.gray.opacity(0.35)))
@@ -33,7 +34,7 @@ struct InkPreview: View {
                     Rectangle().fill(Color(uiColor: UIColor(presetHex: "#315BB1")!)).frame(width: 240, height: 16)
                     Circle().fill(.white).frame(width: session.toolSettings.eraserWidth, height: session.toolSettings.eraserWidth)
                         .overlay(Circle().strokeBorder(.gray, style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
-                }.frame(width: 288, height: 112).clipShape(RoundedRectangle(cornerRadius: 8))
+                }.frame(width: 240, height: 96).clipShape(RoundedRectangle(cornerRadius: 8))
                 Text("Eraser footprint at 100%").font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -50,7 +51,7 @@ struct InkPreview: View {
 }
 
 struct InkPreviewSample: Equatable {
-    static let size = CGSize(width: 288, height: 168)
+    static let size = CGSize(width: 240, height: 144)
     let kind: DrawingToolKind
     let inkType: InkInk.InkType
     let color: UIColor
@@ -79,7 +80,7 @@ struct InkPreviewSample: Equatable {
         let points = (0...80).map { index in
             let progress = CGFloat(index) / 80
             let location = CGPoint(x: margin + progress * (Self.size.width - margin * 2),
-                                   y: Self.size.height / 2 + sin(progress * .pi * 2) * 18)
+                                   y: Self.size.height / 2 + sin(progress * .pi * 2) * min(12, max(0, (Self.size.height - inkWidth) / 2 - 8)))
             return InkStrokePoint(location: location, timeOffset: Double(progress) * 0.8,
                                  size: CGSize(width: inkWidth, height: inkWidth), opacity: 1,
                                  force: 0.15 + 0.85 * sin(progress * .pi), azimuth: .pi / 4, altitude: .pi / 2)

@@ -4,12 +4,15 @@ import SwiftUI
 
 @MainActor
 final class LibraryLayoutTests: XCTestCase {
-    func testTabWidthStaysStableAsDocumentsOpenAndClose() {
-        for available: CGFloat in [180, 320, 700, 1100] {
-            for count in 1...8 {
-                XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: available, count: count), min(240, available))
-            }
-        }
+    func testTabsShareRowThenScrollAtMinimumWidth() {
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 960, count: 1), 480)
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 960, count: 2), 480)
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 960, count: 3), 320)
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 960, count: 4), 240)
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 960, count: 8), 240)
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 960, count: 2, spacing: 4), 476)
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 320, count: 4), 140)
+        XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 100, count: 1), 100)
         XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 0, count: 3), 0)
         XCTAssertEqual(OpenNotesStyle.notebookTabWidth(availableWidth: 700, count: 0), 0)
     }
