@@ -277,9 +277,13 @@ struct WritingCanvas: UIViewRepresentable {
             circle = nil
             guard stroke.ink.inkType != .marker, stroke.ink.inkType != .pencil else { return nil }
             let raw = stroke.rawSamples.map { $0.location.applying(stroke.transform) }
-            if InkGestureRecognition.isScribble(raw, over: previous) {
-                let erased = EraserEditing.erase(previous, along: raw, width: max(12, (stroke.style?.width ?? 3) * 3), mode: .pixel)
-                if EraserEditing.changed(erased, previous) { return erased }
+            if AppPreferences.scratchOutErase, InkGestureRecognition.isScribble(raw, over: previous) {
+                // Scratch-out removes every stroke the scribble crosses, whole, instead of rubbing out pixels.
+                let erased = EraserEditing.erase(previous, along: raw, width: max(6, (stroke.style?.width ?? 3) * 1.5), mode: .stroke)
+                if EraserEditing.changed(erased, previous) {
+                    Diagnostics.shared.record("scribble.erase", ["removed": String(previous.strokes.count - erased.strokes.count)])
+                    return erased
+                }
             }
             if AppPreferences.circleToSelect, InkGestureRecognition.circle(raw) != nil {
                 circle = (stroke.id, raw, ProcessInfo.processInfo.systemUptime + 4)
