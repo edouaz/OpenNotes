@@ -74,7 +74,7 @@ enum ShapeRecognition {
             let box = CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
             guard box.width > 20, box.height > 20 else { return nil }
             let corners = [box.origin, CGPoint(x: box.maxX, y: box.minY), CGPoint(x: box.maxX, y: box.maxY), CGPoint(x: box.minX, y: box.maxY)]
-            let edgeError = rotated.map { min(abs($0.x - box.minX), abs($0.x - box.maxX), abs($0.y - box.minY), abs($0.y - box.maxY)) }.reduce(0, +) / Double(points.count)
+            let edgeError = rotated.map { min(abs($0.x - box.minX), abs($0.x - box.maxX), abs($0.y - box.minY), abs($0.y - box.maxY)) }.reduce(0, +) / CGFloat(points.count)
             let covers = corners.allSatisfy { corner in rotated.contains { hypot($0.x - corner.x, $0.y - corner.y) < diagonal * 0.12 * tolerance } }
             return (corners, rotation, edgeError, covers)
         }
