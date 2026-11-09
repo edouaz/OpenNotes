@@ -92,14 +92,13 @@ final class ContextualToolbarInteractionTests: XCTestCase {
         let layout = app.buttons["editor.toolbarLayout"]
         for _ in 0..<4 where !layout.isHittable { toolbar.swipeLeft() }
         layout.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)).tap()
-        app.buttons["Customize toolbar"].tap()
         XCTAssertFalse(app.switches["Tool options"].exists)
         let lassoToggle = app.switches["Lasso"]
         XCTAssertTrue(lassoToggle.waitForExistence(timeout: 5))
         lassoToggle.tap()
         app.buttons["Done"].tap()
         XCTAssertFalse(lasso.exists)
-        layout.tap(); app.buttons["Customize toolbar"].tap(); app.switches["Lasso"].tap(); app.buttons["Done"].tap()
+        layout.tap(); app.switches["Lasso"].tap(); app.buttons["Done"].tap()
 
         app.buttons["editor.actions"].tap()
         let screenshot = app.buttons["editor.quickScreenshotCopy"]

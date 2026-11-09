@@ -58,12 +58,11 @@ struct EditorScreen: View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 quickActions
-                if !session.isReadOnly {
-                    WritingInstrumentBar(session: session, sticky: insertSticky)
-                }
+                if toolbarPosition == "top", !session.isReadOnly { instrumentBar; Divider() }
                 // Image placement and post-it placement need no banner: tapping the page ends or places them.
                 if selecting { modeBanner }
                 HStack(spacing: 0) {
+                    if toolbarPosition == "left", !session.isReadOnly { instrumentBar; Divider() }
                     if pagesShown && geometry.size.width >= 700 {
                         pagePanel(closeOnSelection: false)
                             .frame(width: min(280, geometry.size.width * 0.3))
@@ -74,7 +73,9 @@ struct EditorScreen: View {
                         Divider()
                     }
                     canvasWorkspace.background(OpenNotesStyle.canvas)
+                    if toolbarPosition == "right", !session.isReadOnly { Divider(); instrumentBar }
                 }
+                if toolbarPosition == "bottom", !session.isReadOnly { Divider(); instrumentBar }
             }
             .sheet(isPresented: Binding(get: { pagesShown && geometry.size.width < 700 }, set: { pagesShown = $0 })) { pageList }
             .sheet(isPresented: Binding(get: { searchShown && geometry.size.width < 700 }, set: { searchShown = $0 })) { searchPanel(closeOnSelection: true) }
@@ -206,6 +207,8 @@ struct EditorScreen: View {
             }
         }
     }
+    @AppStorage(WritingInstrumentBar.positionKey) private var toolbarPosition = "top"
+    private var instrumentBar: some View { WritingInstrumentBar(session: session, sticky: insertSticky) }
     private var quickActions: some View {
         HStack(spacing: 4) {
             Button { pagesShown.toggle(); Task { await session.flush() } } label: {

@@ -9,19 +9,27 @@ struct WritingInstrumentBar: View {
     @State private var customizationShown = false
     @State private var stickyOptionsShown = false
     @AppStorage("undoPlacement") private var undoPlacement = "left"
-    private var tools: [EditorToolSettings.ToolbarItem] { session.toolSettings.normalizedToolbarOrder.filter { $0.drawingTool != nil } }
-    private var utilities: [EditorToolSettings.ToolbarItem] { session.toolSettings.normalizedToolbarOrder.filter { $0 == .stickyNote } }
+    @AppStorage(Self.positionKey) private var position = "top"
+    static let positionKey = "toolbarPosition"
+    /// Docked on the left or right edge, the bar runs top to bottom.
+    private var vertical: Bool { position == "left" || position == "right" }
+    private var arrowEdge: Edge { position == "bottom" ? .bottom : position == "left" ? .leading : position == "right" ? .trailing : .top }
+    private var stack: AnyLayout { vertical ? AnyLayout(VStackLayout(spacing: 4)) : AnyLayout(HStackLayout(spacing: 4)) }
+    private var separator: some View { Divider().frame(width: vertical ? 24 : nil, height: vertical ? nil : 24) }
+    /// Drawing tools and the post-it share one order, so the post-it can sit anywhere among them.
+    private var tools: [EditorToolSettings.ToolbarItem] { session.toolSettings.normalizedToolbarOrder.filter { $0.drawingTool != nil || $0 == .stickyNote } }
     private var colors: [String] { session.toolSettings.colors(for: session.selectedTool) }
     private func presented<T: Equatable>(_ value: T, selection: Binding<T?>) -> Binding<Bool> {
         Binding(get: { selection.wrappedValue == value }, set: { if !$0 { selection.wrappedValue = nil } })
     }
     var body: some View {
-        HStack(spacing: 0) {
-            if undoPlacement == "left" { HStack(spacing: 0) { historyButtons }.buttonStyle(.plain); Divider().frame(height: 24) }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
+        (vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))) {
+            if undoPlacement == "left" { stack { historyButtons }.buttonStyle(.plain); separator }
+            ScrollView(vertical ? .vertical : .horizontal, showsIndicators: false) {
+                stack {
                     ForEach(tools.filter { !session.toolSettings.hiddenTools.contains($0) }) { item in
-                        if let tool = item.drawingTool {
+                        if item == .stickyNote { stickyButton(item) }
+                        else if let tool = item.drawingTool {
                             let selected = session.selectedTool == tool && session.stickyInsertionColor == nil
                             Button {
                                 session.stickyInsertionColor = nil
@@ -33,7 +41,7 @@ struct WritingInstrumentBar: View {
                             }.accessibilityAddTraits(selected ? .isSelected : [])
                                 .accessibilityHint(selected ? "Tap again for options" : "Select tool")
                                 .accessibilityIdentifier("editor.tool.\(item.rawValue)")
-                                .popover(isPresented: presented(item, selection: $optionsItem), arrowEdge: .top) {
+                                .popover(isPresented: presented(item, selection: $optionsItem), arrowEdge: arrowEdge) {
                                     EditorInstrumentOptions(session: session) { optionsItem = nil }
                                         .compactPopover()
                                 }
@@ -41,7 +49,7 @@ struct WritingInstrumentBar: View {
                     }
                     if session.stickyInsertionColor != nil {
                     } else if session.selectedTool.isWritingTool || session.selectedTool == .eraser {
-                        Divider().frame(height: 24)
+                        separator
                         ForEach(0..<3) { index in
                             let preset = session.toolSettings.presets(for: session.selectedTool)[index]
                             let selected = session.selectedStrokePreset == index
@@ -54,12 +62,12 @@ struct WritingInstrumentBar: View {
                             }.accessibilityLabel("Stroke size \(index + 1), \(preset.width.formatted()) points")
                                 .accessibilityAddTraits(selected ? .isSelected : [])
                                 .accessibilityIdentifier("editor.width.\(index + 1)")
-                                .popover(isPresented: presented(index, selection: $sizeItem), arrowEdge: .top) {
+                                .popover(isPresented: presented(index, selection: $sizeItem), arrowEdge: arrowEdge) {
                                     StrokePresetEditor(session: session, index: index).compactPopover()
                                 }
                         }
                         if session.selectedTool.isWritingTool {
-                            Divider().frame(height: 24)
+                            separator
                             ForEach(Array(colors.enumerated()), id: \.offset) { index, hex in
                                 let selected = session.paperInkColor.presetHex == hex
                                 Button {
@@ -70,7 +78,7 @@ struct WritingInstrumentBar: View {
                                         .background(selected ? OpenNotesStyle.accent.opacity(0.14) : .clear, in: Circle()).contentShape(Rectangle())
                                 }.accessibilityLabel("Favorite color \(hex)").accessibilityIdentifier("editor.favorite.\(index)")
                                     .accessibilityAddTraits(selected ? .isSelected : [])
-                                    .popover(isPresented: presented(index, selection: $colorItem), arrowEdge: .top) {
+                                    .popover(isPresented: presented(index, selection: $colorItem), arrowEdge: arrowEdge) {
                                         FavoriteColorEditor(session: session, index: index) { colorItem = nil }.compactPopover()
                                     }
                                     .contextMenu {
@@ -84,41 +92,44 @@ struct WritingInstrumentBar: View {
                             }
                             Button { colorItem = -1 } label: { InstrumentLabel(title: "Add favorite color", symbol: "plus.circle") }
                                 .disabled(colors.count >= 12)
-                                .popover(isPresented: presented(-1, selection: $colorItem), arrowEdge: .top) {
+                                .popover(isPresented: presented(-1, selection: $colorItem), arrowEdge: arrowEdge) {
                                     FavoriteColorEditor(session: session, index: nil) { colorItem = nil }.compactPopover()
                                 }
                         }
                     }
-                    Divider().frame(height: 24)
-                    ForEach(utilities.filter { !session.toolSettings.hiddenTools.contains($0) }) { item in
-                        let active = session.stickyInsertionColor != nil
-                        Button { if active { stickyOptionsShown = true } else { sticky() } } label: {
-                            InstrumentLabel(title: item.title, symbol: item.symbol)
-                                .foregroundStyle(active ? OpenNotesStyle.accent : Color.primary)
-                                .background(active ? OpenNotesStyle.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 12))
-                        }.accessibilityAddTraits(active ? .isSelected : [])
-                            .accessibilityHint(active ? "Tap again for options" : "Select tool, then tap the page")
-                            .accessibilityIdentifier("editor.tool.stickyNote")
-                            .popover(isPresented: $stickyOptionsShown, arrowEdge: .top) { StickyToolOptions(session: session).compactPopover() }
-                    }
-                    Menu {
-                        Button("Customize toolbar", systemImage: "slider.horizontal.3") { customizationShown = true }
-                        Picker("Undo and Redo", selection: $undoPlacement) { Text("Left").tag("left"); Text("Right").tag("right") }
-                    } label: { InstrumentLabel(title: "Toolbar layout", symbol: "ellipsis") }.accessibilityIdentifier("editor.toolbarLayout")
-                }.padding(.horizontal, 12).padding(.vertical, 6)
-            }.frame(height: 58).buttonStyle(.plain).accessibilityIdentifier("editor.toolbar.scroll")
-            if undoPlacement == "right" { Divider().frame(height: 24); HStack(spacing: 0) { historyButtons }.buttonStyle(.plain) }
-        }.background(OpenNotesStyle.chrome).overlay(alignment: .bottom) { Divider() }
+                    separator
+                    Button { customizationShown = true } label: { InstrumentLabel(title: "Customize toolbar", symbol: "ellipsis") }
+                        .accessibilityIdentifier("editor.toolbarLayout")
+                }.padding(vertical ? .vertical : .horizontal, 12).padding(vertical ? .horizontal : .vertical, 6)
+            }.frame(width: vertical ? 58 : nil, height: vertical ? nil : 58).buttonStyle(.plain).accessibilityIdentifier("editor.toolbar.scroll")
+            if undoPlacement == "right" { separator; stack { historyButtons }.buttonStyle(.plain) }
+        }.background(OpenNotesStyle.chrome)
             .sheet(isPresented: $customizationShown) {
                 NavigationStack {
                     List {
+                        Section("Layout") {
+                            Picker("Toolbar position", selection: $position) {
+                                Text("Top").tag("top"); Text("Bottom").tag("bottom"); Text("Left").tag("left"); Text("Right").tag("right")
+                            }
+                            Picker("Undo and Redo", selection: $undoPlacement) { Text(vertical ? "Top" : "Left").tag("left"); Text(vertical ? "Bottom" : "Right").tag("right") }
+                        }
                         customizationSection("Tools · drag to reorder", items: tools)
-                        customizationSection("Utilities · drag to reorder", items: utilities)
-                        Button("Reset toolbar") { session.toolSettings.toolbarOrder = EditorToolSettings.ToolbarItem.allCases.filter { $0 != .image && $0 != .toolOptions }; session.toolSettings.hiddenTools = [.pencil]; undoPlacement = "left" }
+                        Button("Reset toolbar") { session.toolSettings.toolbarOrder = EditorToolSettings.ToolbarItem.allCases.filter { $0 != .image && $0 != .toolOptions }; session.toolSettings.hiddenTools = [.pencil]; undoPlacement = "left"; position = "top" }
                     }.environment(\.editMode, .constant(.active)).navigationTitle("Customize toolbar")
                         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { customizationShown = false } } }
                 }
             }
+    }
+    private func stickyButton(_ item: EditorToolSettings.ToolbarItem) -> some View {
+        let active = session.stickyInsertionColor != nil
+        return Button { if active { stickyOptionsShown = true } else { sticky() } } label: {
+            InstrumentLabel(title: item.title, symbol: item.symbol)
+                .foregroundStyle(active ? OpenNotesStyle.accent : Color.primary)
+                .background(active ? OpenNotesStyle.accent.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 12))
+        }.accessibilityAddTraits(active ? .isSelected : [])
+            .accessibilityHint(active ? "Tap again for options" : "Select tool, then tap the page")
+            .accessibilityIdentifier("editor.tool.stickyNote")
+            .popover(isPresented: $stickyOptionsShown, arrowEdge: arrowEdge) { StickyToolOptions(session: session).compactPopover() }
     }
     private func customizationSection(_ title: String, items: [EditorToolSettings.ToolbarItem]) -> some View {
         Section(title) {
