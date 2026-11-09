@@ -344,7 +344,8 @@ struct EditorScreen: View {
     @discardableResult private func quickAddPage(before: Bool = false) async -> Bool {
         guard !session.isReadOnly, !session.busy, await session.flush(), let current = session.page,
               let id = await store.addPage(noteID: noteID, after: current.id) else { return false }
-        if var page = store.library.page(id: id) {
+        // A page after a normal page continues its paper; after a PDF or image page it keeps the default style the store applied.
+        if current.backgroundID == nil, var page = store.library.page(id: id) {
             page.width = current.width; page.height = current.height; page.template = current.template
             store.updatePage(page)
         }

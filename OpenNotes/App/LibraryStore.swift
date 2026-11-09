@@ -87,7 +87,9 @@ final class LibraryStore: ObservableObject {
             let initial = library
             var snapshot = initial
             let note = try snapshot.addNote(title: title, folderID: folderID ?? snapshot.folders[0].id)
-            let page = snapshot.pages(in: note.id)[0]
+            var page = snapshot.pages(in: note.id)[0]
+            AppPreferences.applyDefaultStyle(to: &page)
+            if let index = snapshot.pages.firstIndex(where: { $0.id == page.id }) { snapshot.pages[index] = page }
             try await disk.write(InkDrawing().dataRepresentation(), name: page.drawingResourceID)
             guard library == initial else { throw CocoaError(.userCancelled) }
             library = snapshot; persist()
@@ -146,7 +148,7 @@ final class LibraryStore: ObservableObject {
         do {
             let initial = library
             var snapshot = initial
-            let page: NotePage
+            var page: NotePage
             if let after, duplicate {
                 var copy = try snapshot.duplicatePage(after: after)
                 if let source = library.page(id: after) {
@@ -161,8 +163,13 @@ final class LibraryStore: ObservableObject {
                 }
                 page = copy
             } else {
+                // After a PDF or image page, and at the end, a new page takes the default style; otherwise it continues its neighbour.
+                let styled = after.flatMap { library.page(id: $0) }.map { $0.backgroundID != nil } ?? true
                 if let after { page = try snapshot.insertPage(after: after) }
-                else { page = try snapshot.appendPage(toNoteID: noteID, template: .blank) }
+                else { page = try snapshot.appendPage(toNoteID: noteID, template: AppPreferences.defaultTemplate) }
+                if styled, let index = snapshot.pages.firstIndex(where: { $0.id == page.id }) {
+                    AppPreferences.applyDefaultStyle(to: &page); snapshot.pages[index] = page
+                }
                 try await disk.write(InkDrawing().dataRepresentation(), name: page.drawingResourceID)
             }
             guard library == initial else { throw CocoaError(.userCancelled) }
