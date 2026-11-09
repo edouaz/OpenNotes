@@ -255,7 +255,9 @@ struct WritingCanvas: UIViewRepresentable {
         func updateInteraction() {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.container != nil else { return }
-                if !self.reading && self.container?.editingInlineNoteID == nil && self.activeCanvas.window?.isKeyWindow == true { self.activeCanvas.becomeFirstResponder() }
+                // Never take focus from a text field (search, rename…): that closed the keyboard as soon as it opened.
+                if !self.reading && self.container?.editingInlineNoteID == nil && self.activeCanvas.window?.isKeyWindow == true,
+                   !(UIResponder.current is UITextInput) { self.activeCanvas.becomeFirstResponder() }
                 self.session.refreshUndoAvailability()
             }
         }
@@ -297,4 +299,15 @@ struct WritingCanvas: UIViewRepresentable {
             return InkGestureRecognition.isOnContour(point, contour: circle.contour, tolerance: 12 / max(0.1, activeCanvas.zoomScale))
         }
     }
+}
+
+extension UIResponder {
+    private static weak var found: UIResponder?
+    /// The current first responder, found by sending an action down the responder chain.
+    static var current: UIResponder? {
+        found = nil
+        UIApplication.shared.sendAction(#selector(captureFirstResponder), to: nil, from: nil, for: nil)
+        return found
+    }
+    @objc private func captureFirstResponder() { UIResponder.found = self }
 }

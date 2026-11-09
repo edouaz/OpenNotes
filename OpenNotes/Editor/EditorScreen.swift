@@ -70,13 +70,23 @@ struct EditorScreen: View {
                         pagePanel(closeOnSelection: false)
                             .frame(width: min(280, geometry.size.width * 0.3))
                         Divider()
+                    } else if searchShown && geometry.size.width >= 700 {
+                        searchPanel(closeOnSelection: false)
+                            .frame(width: min(280, geometry.size.width * 0.3))
+                        Divider()
                     }
                     canvasWorkspace.background(OpenNotesStyle.canvas)
                 }
             }
             .sheet(isPresented: Binding(get: { pagesShown && geometry.size.width < 700 }, set: { pagesShown = $0 })) { pageList }
+            .sheet(isPresented: Binding(get: { searchShown && geometry.size.width < 700 }, set: { searchShown = $0 })) { searchPanel(closeOnSelection: true) }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: pagesShown)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: searchShown)
+            .onChange(of: pagesShown) { if $0 { searchShown = false } }
+            .onChange(of: searchShown) { if $0 { pagesShown = false } }
         }
+        // The keyboard slides over the page instead of shrinking it (the page used to refit and jump).
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         // Bottom corner, clear of the toolbar menus; it only appears when the work lasts long enough to notice.
         .overlay(alignment: .bottomTrailing) { ActivityIndicator(store: store, loading: session.busy).allowsHitTesting(false) }
         .overlay(alignment: .bottom) {
@@ -129,7 +139,6 @@ struct EditorScreen: View {
         .sheet(isPresented: $annotationsShown) { AnnotationsSheet(session: session) { item in
             Task { try? await Task.sleep(nanoseconds: 300_000_000); stickyNote = item }
         } }
-        .sheet(isPresented: $searchShown) { DocumentSearchSheet(session: session, store: store) }
         .sheet(item: $stickyNote) { StickyNoteSheet(session: session, note: $0) }
         .sheet(item: $textElement, onDismiss: { session.selectedTool = .lasso }) { item in
             if let page = session.page { TextElementSheet(session: session, pageID: page.id, element: item) }
@@ -213,8 +222,9 @@ struct EditorScreen: View {
             .accessibilityIdentifier("editor.pages")
             .accessibilityValue("Page \(currentIndex + 1) of \(pages.count)")
             .accessibilityAddTraits(pagesShown ? .isSelected : [])
-            Button { searchShown = true } label: { Label("Search", systemImage: "magnifyingglass") }
+            Button { searchShown.toggle() } label: { Label("Search", systemImage: "magnifyingglass") }
                 .accessibilityIdentifier("editor.search")
+                .accessibilityAddTraits(searchShown ? .isSelected : [])
             Button {
                 Task {
                     guard await session.flush() else { return }
@@ -388,6 +398,9 @@ struct EditorScreen: View {
         return session.page?.id == id
     }
     var pageList: some View { pagePanel(closeOnSelection: true) }
+    private func searchPanel(closeOnSelection: Bool) -> some View {
+        DocumentSearchPanel(session: session, store: store, closeOnSelection: closeOnSelection) { searchShown = false }
+    }
     private func pagePanel(closeOnSelection: Bool) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {

@@ -72,6 +72,7 @@ struct NotebookWorkspaceView: View {
                 }.id(id)
             }
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .navigationBarBackButtonHidden()
         .toolbar(.hidden, for: .navigationBar)
         .alert("Could not save", isPresented: Binding(
