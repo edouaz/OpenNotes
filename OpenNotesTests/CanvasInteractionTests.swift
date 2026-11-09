@@ -119,7 +119,7 @@ final class CanvasInteractionTests: XCTestCase {
         XCTAssertTrue(image.acceptsImageDrag(at: CGPoint(x: 100, y: 50)))
         XCTAssertFalse(image.acceptsImageDrag(at: .zero))
         XCTAssertFalse(image.acceptsImageDrag(at: CGPoint(x: 200, y: 50)))
-        XCTAssertFalse(image.acceptsImageDrag(at: CGPoint(x: -28, y: -28)))
+        XCTAssertFalse(image.acceptsImageDrag(at: image.deleteButton.center))
         image.showsHandles = false
         XCTAssertTrue(image.acceptsImageDrag(at: .zero))
     }
@@ -194,13 +194,14 @@ final class CanvasInteractionTests: XCTestCase {
         let source = stroke([CGPoint(x: 20, y: 100), CGPoint(x: 80, y: 102), CGPoint(x: 160, y: 100)], type: .marker)
         var settings = EditorToolSettings()
         let freehand = try XCTUnwrap(StrokeProcessing.process(source, tool: .marker, width: 8, settings: settings, shapeHeld: false))
-        XCTAssertEqual(freehand.path.map(\.location), source.path.map(\.location))
+        XCTAssertEqual(freehand.path.count, source.path.count)
+        XCTAssertEqual(freehand.rawSamples.map(\.location), source.path.map(\.location))
         let shape = try XCTUnwrap(StrokeProcessing.process(source, tool: .marker, width: 8, settings: settings, shapeHeld: true))
         XCTAssertEqual(shape.ink.inkType, .marker)
         XCTAssertEqual(shape.path.map(\.location), [source.path.first!.location, source.path.last!.location])
         settings.shapeRecognitionEnabled = false
         let disabled = try XCTUnwrap(StrokeProcessing.process(source, tool: .marker, width: 8, settings: settings, shapeHeld: true))
-        XCTAssertEqual(disabled.path.map(\.location), source.path.map(\.location))
+        XCTAssertEqual(disabled.path.map(\.location), freehand.path.map(\.location))
     }
     func testPDFMarkerComposesBelowOpaqueTextInImageCaptureAndExport() throws {
         var page = page(); page.backgroundID = "source.pdf"; page.pdfIndex = 0

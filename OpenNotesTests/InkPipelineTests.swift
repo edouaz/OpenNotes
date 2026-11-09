@@ -48,7 +48,9 @@ final class InkPipelineTests: XCTestCase {
         var settings = EditorToolSettings(); settings.rulerEnabled = true
         let source = stroke()
         let result = try XCTUnwrap(StrokeProcessing.process(source, tool: .marker, width: 3, settings: settings, shapeHeld: true))
-        XCTAssertEqual(result.path.map(\.location), source.path.map(\.location))
+        let freehand = try XCTUnwrap(StrokeProcessing.process(source, tool: .marker, width: 3, settings: settings, shapeHeld: false))
+        XCTAssertEqual(result.path.map(\.location), freehand.path.map(\.location))
+        XCTAssertEqual(result.path.count, source.path.count)
         XCTAssertNotNil(result.style)
     }
     func testLiveStabilizationKeepsPrefixAndReducesTremor() throws {

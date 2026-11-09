@@ -316,6 +316,7 @@ private final class CursorTouch: UITouch {
     override var altitudeAngle: CGFloat { .pi / 2 }
     override func azimuthAngle(in view: UIView?) -> CGFloat { 0 }
     override func location(in view: UIView?) -> CGPoint { CGPoint(x: 100, y: 80) }
+    override func preciseLocation(in view: UIView?) -> CGPoint { location(in: view) }
 }
 
 @MainActor

@@ -433,7 +433,7 @@ final class CloudSyncTests: XCTestCase {
         await cloud.sync()
         store.update(id) { $0.title = "Automatic" }
         _ = await store.flush()
-        try await Task.sleep(nanoseconds: 2_000_000_000)
+        try await Task.sleep(nanoseconds: UInt64((AppPreferences.syncDelay + 1) * 1_000_000_000))
         XCTAssertEqual(cloud.phase, .synced)
         let archive = try await store.archive(id)
         XCTAssertEqual(cloud.state.links[id.uuidString]?.checksum, CloudSync.checksum(try CloudSync.encode(archive)))
@@ -466,7 +466,7 @@ final class CloudSyncTests: XCTestCase {
         cloud.signOut()
         cloud.email = "person@example.com"; cloud.password = "password"
         await cloud.authenticate(signup: false)
-        try await Task.sleep(nanoseconds: 2_000_000_000)
+        try await Task.sleep(nanoseconds: UInt64((AppPreferences.syncDelay + 1) * 1_000_000_000))
         XCTAssertGreaterThan(dataCalls, 0)
         cloud.pauseSync(); cloud.signOut()
         let before = dataCalls

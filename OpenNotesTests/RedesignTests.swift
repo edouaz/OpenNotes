@@ -124,7 +124,10 @@ final class RedesignTests: XCTestCase {
         try XCTUnwrap(completion).resume(returning: true); completion = nil
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertTrue(turn.committing, "Success alone must not uncover an uninstalled canvas")
-        turn.pageInstalled(UUID())
+        let installed = UUID()
+        turn.pageInstalled(installed)
+        XCTAssertTrue(turn.committing, "Installed canvas must remain covered until its paper is drawn")
+        turn.paperReady(installed)
         XCTAssertFalse(turn.committing)
         start()
         for _ in 0..<100 { if completion != nil { break }; await Task.yield() }

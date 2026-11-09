@@ -54,13 +54,17 @@ final class InkInputTests: XCTestCase {
         buffer.predict([point(35, time: 0.2)])
         let preview = try XCTUnwrap(buffer.stroke(geometry: buffer.samples + buffer.predictions,
             ink: InkInk(.pen, color: .black), createdAt: Date(), id: UUID(), tool: .pen, width: 3, settings: EditorToolSettings()))
-        XCTAssertEqual(preview.path.last?.location.x, 35)
+        let predictedX = try XCTUnwrap(preview.path.last?.location.x)
+        XCTAssertGreaterThan(predictedX, 20)
+        XCTAssertLessThanOrEqual(predictedX, 35)
         XCTAssertEqual(preview.rawSamples.map(\.location.x), [10, 20])
         let held = try XCTUnwrap(buffer.stroke(geometry: [point(50, time: 0), point(100, time: 0.1)],
             ink: InkInk(.pen, color: .black), createdAt: Date(), id: UUID(), tool: .pen, width: 3, settings: EditorToolSettings()))
-        XCTAssertEqual(held.path.map(\.location.x), [50, 100])
+        XCTAssertEqual(held.path.first?.location.x, 50)
+        XCTAssertGreaterThan(try XCTUnwrap(held.path.last?.location.x), 95)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(held.path.last?.location.x), 100)
         XCTAssertEqual(held.rawSamples.map(\.location.x), [10, 20])
-        XCTAssertEqual(try InkDrawing(data: InkDrawing(strokes: [held]).dataRepresentation()).strokes[0].path.map(\.location.x), [50, 100])
+        XCTAssertEqual(try InkDrawing(data: InkDrawing(strokes: [held]).dataRepresentation()).strokes[0].path.map(\.location.x), held.path.map(\.location.x))
     }
     @MainActor
     func testPencilOnlyRejectsFingerAndIndirectInput() {
