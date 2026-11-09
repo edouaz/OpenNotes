@@ -263,7 +263,8 @@ extension PageScrollView: UIGestureRecognizerDelegate {
         if gestureRecognizer === fitGesture {
             var target = touch.view
             while let view = target, view !== self {
-                if view is StickyNoteControl { return false }
+                // Images too: a pending double tap delayed the delete button and the handles.
+                if view is StickyNoteControl || view is ImageHandlesView { return false }
                 target = view.superview
             }
         }

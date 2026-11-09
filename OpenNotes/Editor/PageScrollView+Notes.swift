@@ -56,10 +56,16 @@ extension PageScrollView {
         let previousIDs = Set(imageViews.map { $0.item.id })
         let selected = imagePage?.id == page?.id ? imageViews.first(where: { $0.showsHandles })?.item.id : nil
         imagePage = page
-        imageViews.forEach { $0.removeFromSuperview() }; imageViews.removeAll()
+        // Edited images keep their view: recreating every view on each move or resize made them flash and drop a quick second grab.
+        var reusable = Dictionary(imageViews.map { ($0.item.id, $0) }, uniquingKeysWith: { first, _ in first })
+        imageViews.removeAll()
         let hiddenParents = page?.collapsedContentParents ?? []
         for item in page?.elements ?? [] where item.kind == .image && item.parentID.map({ !hiddenParents.contains($0) }) != false {
-            let view = ImageHandlesView(item: item, image: item.resource.flatMap { images[$0] })
+            let image = item.resource.flatMap { images[$0] }
+            let view: ImageHandlesView
+            if let existing = reusable.removeValue(forKey: item.id), existing.preview.image === image {
+                view = existing; view.item = item
+            } else { view = ImageHandlesView(item: item, image: image) }
             view.editsDirectly = pencil; view.preview.isHidden = !pencil
             view.pageSize = pageSize; view.editableWithPencil = pencil; view.showsHandles = !leaving && selected == item.id
             view.changed = { changed($0, item.id) }
@@ -70,6 +76,7 @@ extension PageScrollView {
             }
             imageViews.append(view); insertSubview(view, belowSubview: canvas)
         }
+        reusable.values.forEach { $0.removeFromSuperview() }
         if pencil, let added = imageViews.last(where: { !previousIDs.contains($0.item.id) }) { selectImage(added.item.id) }
         else if entering { selectImage(imageViews.last?.item.id) }
         alignBackground()

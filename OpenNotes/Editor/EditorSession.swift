@@ -449,9 +449,11 @@ final class EditorSession: ObservableObject {
     }
     func insertImage(_ image: UIImage, at position: CGPoint? = nil, centered: Bool = false) async {
         pendingDocumentActions += 1; defer { pendingDocumentActions -= 1 }
-        guard !isReadOnly, await flush(), let original = page else { return }
+        guard !isReadOnly, let original = page else { return }
+        let started = CACurrentMediaTime()
         do {
             let (data, size) = try await Task.detached(priority: .userInitiated) { try ImportedImage.encode(image, crop: nil) }.value
+            Diagnostics.shared.record("image.import", ["encodeMs": elapsedMilliseconds(since: started), "bytes": String(data.count), "format": ImportedImage.fileExtension(data)])
             guard page?.id == original.id else { throw CocoaError(.userCancelled) }
             var item = PageElement(kind: .image)
             let pageSize = PageRenderer.size(original)
@@ -460,9 +462,10 @@ final class EditorSession: ObservableObject {
             if item.height > pageSize.height * 0.6 { item.width *= pageSize.height * 0.6 / item.height; item.height = pageSize.height * 0.6 }
             item.x = min(max(0, position.map { $0.x - (centered ? item.width / 2 : 0) } ?? (pageSize.width - item.width) / 2), pageSize.width - item.width)
             item.y = min(max(0, position.map { $0.y - (centered ? item.height / 2 : 0) } ?? (pageSize.height - item.height) / 2), pageSize.height - item.height)
-            let name = UUID().uuidString + ".png"
+            let name = UUID().uuidString + "." + ImportedImage.fileExtension(data)
             try await store.disk.write(data, name: name); item.resource = name
-            await apply(.init(pageID: original.id, kind: .upsertElement, element: item))
+            // Shown at once; the autosave persists it like any direct edit.
+            await apply(.init(pageID: original.id, kind: .upsertElement, element: item), durable: false)
         } catch { Diagnostics.shared.failure("editor.failure", error: error); self.error = error.localizedDescription }
     }
     func paste(at point: CGPoint) async {

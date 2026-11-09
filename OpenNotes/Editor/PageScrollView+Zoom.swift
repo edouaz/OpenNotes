@@ -174,6 +174,7 @@ extension PageScrollView {
             }
             view.center = CGPoint(x: (view.item.x + view.item.width / 2) * zoom - offset.x, y: (view.item.y + view.item.height / 2) * zoom - offset.y)
             view.transform = CGAffineTransform(rotationAngle: view.item.rotation ?? 0)
+            if view.showsHandles { view.setNeedsLayout() }   // keeps the delete button inside the viewport while scrolling
         }
     }
 }

@@ -15,7 +15,7 @@ final class PageArtwork {
         } else { pdfPage = nil }
         var images: [String: UIImage] = [:]
         if page.pdfIndex == nil, let data { images["background"] = UIImage(data: data) }
-        for (name, bytes) in resources { images[name] = UIImage(data: bytes) }
+        for (name, bytes) in resources { images[name] = ImportedImage.display(bytes) }
         self.images = images
     }
 }
