@@ -75,7 +75,9 @@ final class InkPipelineTests: XCTestCase {
         XCTAssertLessThan(jitter, rawJitter * 0.5)
         settings.stabilization = 0
         let direct = try XCTUnwrap(StrokeProcessing.process(drawing(40), tool: .pen, width: 3, settings: settings, shapeHeld: false))
-        XCTAssertEqual(direct.path.map(\.location), samples.map(\.location))
+        // 0 % keeps a light filter: close to the raw samples, but less jittery.
+        for (point, raw) in zip(direct.path, samples) { XCTAssertLessThan(hypot(point.location.x - raw.location.x, point.location.y - raw.location.y), 4) }
+        XCTAssertEqual(direct.path.first?.location, samples.first?.location)
     }
 
     func testPressureCanBeDisabledWithoutDiscardingRawMetadata() throws {

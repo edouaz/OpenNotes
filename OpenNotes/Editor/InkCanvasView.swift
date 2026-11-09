@@ -287,7 +287,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         let width = capturedInk?.width ?? capturedEraser?.width ?? 3
         let force: CGFloat = touch.type == .pencil && touch.maximumPossibleForce > 0
             ? min(1, max(0, touch.force / touch.maximumPossibleForce)) : 0.5
-        return InkStrokePoint(location: touch.location(in: inkContentView), timeOffset: max(0, touch.timestamp - startedAt),
+        return InkStrokePoint(location: touch.preciseLocation(in: inkContentView), timeOffset: max(0, touch.timestamp - startedAt),
                               size: CGSize(width: width, height: width), opacity: 1, force: force,
                               azimuth: touch.type == .pencil ? touch.azimuthAngle(in: inkContentView) : 0,
                               altitude: touch.type == .pencil ? touch.altitudeAngle : .pi / 2)

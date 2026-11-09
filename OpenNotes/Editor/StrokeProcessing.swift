@@ -72,13 +72,15 @@ enum StrokeProcessing {
         }
         mutating func append(_ original: InkStrokePoint) {
             var location = original.location
-            if smoothing > 0, let before = previous {
+            if let before = previous {
                 let dt = max(0.001, original.timeOffset - before.timeOffset)
                 let derivativeAlpha = CGFloat(1 / (1 + 1 / (2 * Double.pi * dt)))
                 velocity.x += derivativeAlpha * ((original.location.x - before.location.x) / dt - velocity.x)
                 velocity.y += derivativeAlpha * ((original.location.y - before.location.y) / dt - velocity.y)
                 // Starting calibration in page points; real Pencil latency needs hardware measurement.
-                let cutoff = 6 - 5.5 * smoothing + (0.01 - 0.008 * smoothing) * hypot(velocity.x, velocity.y)
+                // At 0 % a light, fast filter still removes digitizer jitter (a few ms of lag) so lines don't look jagged.
+                let speed = hypot(velocity.x, velocity.y)
+                let cutoff = smoothing > 0 ? 6 - 5.5 * smoothing + (0.01 - 0.008 * smoothing) * speed : 20 + 0.02 * speed
                 let alpha = CGFloat(1 / (1 + 1 / (2 * Double.pi * cutoff * dt)))
                 location = CGPoint(x: filtered.x + alpha * (original.location.x - filtered.x),
                                    y: filtered.y + alpha * (original.location.y - filtered.y))
