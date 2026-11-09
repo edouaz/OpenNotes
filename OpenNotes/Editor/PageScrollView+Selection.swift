@@ -16,7 +16,8 @@ extension PageScrollView {
         selectionRendered = true
         if selectionCommitFinished {
             let generation = selectionGeneration
-            DispatchQueue.main.async { [weak self] in
+            // Moved objects drawn by the paper (notes, images, text) are kept on the preview until their tiles are redrawn.
+            paper.whenDrawn { [weak self] in
                 guard let self, self.selectionGeneration == generation, self.selectionCommitFinished else { return }
                 self.clearSelectionPreview()
             }
@@ -171,8 +172,13 @@ extension PageScrollView {
                     Diagnostics.shared.record("lasso.commit", ["ms": elapsedMilliseconds(since: started), "success": String(success), "strokes": String(preview?.snapshot.strokeIndices.count ?? 0)])
                     guard let self, self.selectionView === overlay, session.selectedTool == tool, self.selectionGeneration == generation, self.selectionPreview === preview else { return }
                     self.selectionCommitFinished = true
-                    if !success || logicalDelta == .zero || preview?.snapshot.ink.strokes.isEmpty != false {
+                    if !success || logicalDelta == .zero {
                         self.clearSelectionPreview()
+                    } else if preview?.snapshot.ink.strokes.isEmpty != false {
+                        self.paper.whenDrawn { [weak self] in
+                            guard let self, self.selectionGeneration == generation, self.selectionPreview === preview else { return }
+                            self.clearSelectionPreview()
+                        }
                     } else if self.selectionRendered { self.selectionDidRender() }
                     if success {
                         let transformed = UIBezierPath(cgPath: path.cgPath)

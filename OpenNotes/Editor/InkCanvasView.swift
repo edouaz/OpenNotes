@@ -464,8 +464,19 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
 final class InkContentView: UIView, UIGestureRecognizerDelegate {
     weak var owner: InkCanvasView?
     let preview = CAShapeLayer()
-    private var committed: [UUID: CAShapeLayer] = [:]
+    // Consecutive same-colour pen strokes share one layer: thousands of per-stroke layers made the GPU
+    // composite every stroke each frame on long pages. Markers and masked strokes keep their own layer.
+    private final class InkRun {
+        let layer = CAShapeLayer()
+        var ids: [UUID] = []
+        var merged = false
+    }
+    private var runs: [InkRun] = []
+    private var runOf: [UUID: InkRun] = [:]
     private var installed: [UUID: InkStroke] = [:]
+    private var drawing = InkDrawing()
+    private var suppressed: Set<UUID> = []   // strokes whose erasure preview is shown instead
+    var committedLayerCount: Int { runs.count }
     private var erasureLayers: [UUID: CAShapeLayer] = [:]
     private var hiddenStrokeIDs: Set<UUID> = []
     private struct NoteMaskKey: Equatable {
@@ -495,15 +506,14 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
         noteMaskKeys = keys
         occlusion = StickyInkOcclusion(elements)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        for (id, stroke) in installed {
-            committed[id]?.mask = occlusion.mask(for: stroke)
-            erasureLayers[id]?.mask = occlusion.mask(for: stroke, worldCoordinates: true)
-        }
+        for id in erasureLayers.keys { if let stroke = installed[id] { erasureLayers[id]?.mask = occlusion.mask(for: stroke, worldCoordinates: true) } }
         CATransaction.commit()
+        install(drawing, force: true)
     }
     func setHiddenStrokes(_ ids: Set<UUID>) {
+        let changed = ids.symmetricDifference(hiddenStrokeIDs)
         hiddenStrokeIDs = ids
-        for (id, layer) in committed { layer.isHidden = ids.contains(id) || erasureLayers[id] != nil }
+        refresh(changed)
     }
     func eraseVisible(_ strokes: [InkStroke], along points: [CGPoint], width: Double, mode: EditorToolSettings.EraserMode,
                       erasePen: Bool = true, eraseHighlighter: Bool = true) -> [InkStroke] {
@@ -527,7 +537,8 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
     }
     func clearErasurePreview() {
         erasureLayers.values.forEach { $0.removeFromSuperlayer() }; erasureLayers = [:]
-        setHiddenStrokes(hiddenStrokeIDs)
+        let restored = suppressed; suppressed = []
+        refresh(restored)
     }
     func previewErasure(of source: InkStroke, with strokes: [InkStroke]) {
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -540,9 +551,9 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
         for stroke in strokes { path.addPath(stroke.paintedPath, transform: stroke.transform) }
         shape.path = path
         shape.fillColor = source.ink.color.withAlphaComponent(source.ink.color.cgColor.alpha * (source.ink.inkType == .marker ? 0.3 : 1)).cgColor
-        shape.zPosition = committed[source.id]?.zPosition ?? 0
-        committed[source.id]?.isHidden = true
+        shape.zPosition = runOf[source.id]?.layer.zPosition ?? 0
         CATransaction.commit()
+        if suppressed.insert(source.id).inserted { refresh([source.id]) }
     }
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -550,24 +561,86 @@ final class InkContentView: UIView, UIGestureRecognizerDelegate {
         layer.addSublayer(preview)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func install(_ drawing: InkDrawing) {
+    func install(_ drawing: InkDrawing, force: Bool = false) {
+        self.drawing = drawing
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        let ids = Set(drawing.strokes.map(\.id))
-        for id in committed.keys.filter({ !ids.contains($0) }) { committed.removeValue(forKey: id)?.removeFromSuperlayer(); installed[id] = nil }
-        for (order, stroke) in drawing.strokes.enumerated() {
-            let shape: CAShapeLayer
-            if let existing = committed[stroke.id] { shape = existing }
-            else { shape = CAShapeLayer(); committed[stroke.id] = shape; layer.insertSublayer(shape, below: preview) }
-            // The path object is cached until the immutable document stroke changes.
-            if let previous = installed[stroke.id], previous.path.controlPoints == stroke.path.controlPoints,
-               previous.style == stroke.style, previous.transform == stroke.transform, previous.vectorOutline == stroke.vectorOutline,
-               previous.parentID == stroke.parentID, previous.ink.color.isEqual(stroke.ink.color), previous.ink.inkType == stroke.ink.inkType { }
-            else { configure(shape, stroke: stroke); shape.mask = occlusion.mask(for: stroke); installed[stroke.id] = stroke }
-            shape.zPosition = CGFloat(order)
-            shape.isHidden = hiddenStrokeIDs.contains(stroke.id)
+        defer { CATransaction.commit() }
+        // Plan runs. Boundaries come from each stroke's own id, so erasing or adding a stroke
+        // only rebuilds the run it belongs to, not every run after it.
+        var plan: [(ids: [UUID], merged: Bool)] = []
+        var mergeKey: (UIColor, InkInk.InkType)?
+        for stroke in drawing.strokes {
+            let mergeable = stroke.ink.inkType != .marker && !occlusion.masks(stroke)
+            if mergeable, let key = mergeKey, let last = plan.last, last.merged, last.ids.count < 96,
+               stroke.id.uuid.0 & 31 != 0, key.1 == stroke.ink.inkType, key.0.isEqual(stroke.ink.color) {
+                plan[plan.count - 1].ids.append(stroke.id)
+            } else {
+                plan.append(([stroke.id], mergeable))
+                mergeKey = mergeable ? (stroke.ink.color, stroke.ink.inkType) : nil
+            }
         }
-        preview.zPosition = CGFloat(drawing.strokes.count + 1)
+        let strokes = drawing.strokes.reduce(into: [UUID: InkStroke]()) { $0[$1.id] = $1 }
+        let changed = Set(drawing.strokes.compactMap { stroke -> UUID? in
+            guard let previous = installed[stroke.id], previous.path.controlPoints == stroke.path.controlPoints,
+                  previous.style == stroke.style, previous.transform == stroke.transform, previous.vectorOutline == stroke.vectorOutline,
+                  previous.parentID == stroke.parentID, previous.ink.color.isEqual(stroke.ink.color),
+                  previous.ink.inkType == stroke.ink.inkType else { return stroke.id }
+            return nil
+        })
+        installed = strokes
+        var reusable = Dictionary(runs.map { ($0.ids, $0) }, uniquingKeysWith: { first, _ in first })
+        var spare = runs.filter { reusable[$0.ids] !== $0 }
+        var next: [InkRun] = []
+        for entry in plan {
+            if !force, let run = reusable[entry.ids], run.merged == entry.merged, !entry.ids.contains(where: changed.contains) {
+                reusable[entry.ids] = nil; next.append(run); continue
+            }
+            let run = reusable.removeValue(forKey: entry.ids) ?? spare.popLast() ?? InkRun()
+            run.ids = entry.ids; run.merged = entry.merged
+            if run.layer.superlayer == nil { layer.insertSublayer(run.layer, below: preview) }
+            configure(run)
+            next.append(run)
+        }
+        for run in reusable.values { run.layer.removeFromSuperlayer() }
+        for run in spare where !next.contains(where: { $0 === run }) { run.layer.removeFromSuperlayer() }
+        runs = next
+        runOf = [:]
+        for (order, run) in runs.enumerated() {
+            run.layer.zPosition = CGFloat(order)
+            for id in run.ids { runOf[id] = run }
+        }
+        suppressed.formIntersection(strokes.keys)
+        preview.zPosition = CGFloat(runs.count + 1)
+    }
+    /// Rebuilds the runs holding these strokes after their hidden or suppressed state changed.
+    private func refresh(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        var seen: [ObjectIdentifier] = []
+        for id in ids {
+            guard let run = runOf[id], !seen.contains(ObjectIdentifier(run)) else { continue }
+            seen.append(ObjectIdentifier(run)); configure(run)
+        }
         CATransaction.commit()
+    }
+    private func configure(_ run: InkRun) {
+        let visible = run.ids.filter { !hiddenStrokeIDs.contains($0) && !suppressed.contains($0) }.compactMap { installed[$0] }
+        if !run.merged, let stroke = run.ids.first.flatMap({ installed[$0] }) {
+            configure(run.layer, stroke: stroke)
+            run.layer.mask = occlusion.mask(for: stroke)
+            run.layer.isHidden = visible.isEmpty
+            return
+        }
+        let path = CGMutablePath()
+        for stroke in visible { path.addPath(stroke.paintedPath, transform: stroke.transform) }
+        run.layer.mask = nil
+        run.layer.path = path
+        run.layer.setAffineTransform(.identity)
+        if let stroke = run.ids.first.flatMap({ installed[$0] }) {
+            run.layer.fillColor = stroke.ink.color.withAlphaComponent(stroke.ink.color.cgColor.alpha * (stroke.ink.inkType == .marker ? 0.3 : 1)).cgColor
+        }
+        run.layer.fillRule = .nonZero
+        run.layer.isHidden = visible.isEmpty
     }
     // The preview shows what the commit will keep: attachment is decided by the first sample.
     func clipPreview(startingAt point: CGPoint) {

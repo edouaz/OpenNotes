@@ -150,7 +150,9 @@ struct WritingCanvas: UIViewRepresentable {
                     view?.showUndoToast("Sticky note deleted") { session.canvas.undoManager?.undo(); session.refreshUndoAvailability() }
                 }
                 if !saved, let current = session.page { view?.restoreNotes(from: current) }
-                if view?.noteMovePreview === preview { view?.clearNoteMovePreview() }
+                // The lifted preview covers the note until the paper has redrawn it at its new place.
+                if saved { view?.paper.whenDrawn { if view?.noteMovePreview === preview { view?.clearNoteMovePreview() } } }
+                else if view?.noteMovePreview === preview { view?.clearNoteMovePreview() }
             }
         }
         view.onEditElement = editNote

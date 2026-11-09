@@ -39,6 +39,13 @@ struct StickyInkOcclusion {
         return Array(notes.dropFirst(start)).filter { !parentIDs.contains($0.id) && $0.bounds.intersects(box) }
     }
 
+    /// Cheap check of `mask(for:) != nil`, without building the mask path.
+    func masks(_ stroke: InkStroke) -> Bool {
+        guard !notes.isEmpty else { return false }
+        let parents = ancestors(stroke)
+        return !parents.isEmpty || !covers(stroke, ancestors: parents).isEmpty
+    }
+
     func mask(for stroke: InkStroke, worldCoordinates: Bool = false) -> CAShapeLayer? {
         let parents = ancestors(stroke), covers = covers(stroke, ancestors: parents)
         guard !parents.isEmpty || !covers.isEmpty else { return nil }

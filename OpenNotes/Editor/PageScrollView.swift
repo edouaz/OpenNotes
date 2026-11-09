@@ -145,6 +145,7 @@ final class PageScrollView: UIView {
         clipsToBounds = true
         paper.backgroundColor = .white
         paper.isUserInteractionEnabled = false
+        paper.onPageReady = { [weak self] id in self?.pageTurn.paperReady(id) }
         addSubview(paper)
         canvas.overrideUserInterfaceStyle = .light
         canvas.backgroundColor = .clear

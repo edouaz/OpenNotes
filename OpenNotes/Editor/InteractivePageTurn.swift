@@ -19,16 +19,29 @@ final class InteractivePageTurn: NSObject, UIGestureRecognizerDelegate {
     private var animationFinished = false
     private var navigationFinished = false
     private var installed = false
+    private var readyPageID: UUID?
     private var sourcePageID: UUID?
     private var transitionID = UUID()
     private var navigationTask: Task<Void, Never>?
     func pageInstalled(_ id: UUID) {
         installedPageID = id
-        guard committing, id != sourcePageID else { return }
-        installed = true; finishIfReady()
+        guard committing, id != sourcePageID, !installed else { return }
+        installed = true
+        // The incoming preview stays until the paper has drawn the page (never longer than this).
+        let request = transitionID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, self.transitionID == request, self.committing else { return }
+            self.readyPageID = id; self.finishIfReady()
+        }
+        finishIfReady()
+    }
+    /// The paper of `id` shows its own content: the page turn overlay can go without a blank or stale frame.
+    func paperReady(_ id: UUID) {
+        readyPageID = id
+        finishIfReady()
     }
     private func finishIfReady() {
-        if committing && animationFinished && navigationFinished && installed { clear() }
+        if committing && animationFinished && navigationFinished && installed && readyPageID == installedPageID { clear() }
     }
     let gesture = UIPanGestureRecognizer()
     init(view: PageScrollView) {
@@ -78,7 +91,7 @@ final class InteractivePageTurn: NSObject, UIGestureRecognizerDelegate {
         prepare?(0)
         current?.layer.removeAllAnimations(); adjacent?.layer.removeAllAnimations()
         current?.removeFromSuperview(); adjacent?.removeFromSuperview(); blocker?.removeFromSuperview(); blocker = nil
-        current = nil; adjacent = nil; committing = false
+        current = nil; adjacent = nil; committing = false; readyPageID = nil
         view?.selectionView?.isHidden = false
         animationFinished = false; navigationFinished = false; installed = false
     }
