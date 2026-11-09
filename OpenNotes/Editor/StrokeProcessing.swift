@@ -24,7 +24,7 @@ enum StrokeProcessing {
         guard var live = Live(tool: tool, width: width, settings: settings) else { return nil }
         let duration = max(0.001, original.last?.timeOffset ?? 0)
         var shape = shapeHeld && settings.rulerEnabled != true && settings.shapeRecognitionEnabled && (live.pen || tool == .marker)
-            ? ShapeRecognition.recognize(original.map(\.location)) : nil
+            ? ShapeRecognition.recognize(original.map(\.location), tolerance: AppPreferences.shapeTolerance, axisLock: AppPreferences.shapeAxisLock) : nil
         if settings.shapeAngleSnap == true, let points = shape, points.count == 2 {
             shape = snappedLine(points.map { $0.applying(stroke.transform) }).map { $0.applying(stroke.transform.inverted()) }
         }

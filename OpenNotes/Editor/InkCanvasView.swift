@@ -242,7 +242,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
             awaitingCircle = false; beginDrawing(activeTouch, event: event)
         }
         if let adjustment = heldAdjustment {
-            heldPoints = adjustment.points(at: location)
+            heldPoints = Self.locked(adjustment.points(at: location))
         } else {
             collect(activeTouch, event: event, predicting: true)
             if hypot(location.x - lastStationary.x, location.y - lastStationary.y) * zoomScale > 3 {
@@ -261,7 +261,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         }
         FrameMonitor.shared.end(["input": activeTouch.type == .pencil ? "pencil" : "finger", "samples": String(buffer.samples.count), "pageStrokes": String(drawing.strokes.count)])
         if awaitingCircle { return }
-        if let adjustment = heldAdjustment { heldPoints = adjustment.points(at: activeTouch.location(in: inkContentView)) }
+        if let adjustment = heldAdjustment { heldPoints = Self.locked(adjustment.points(at: activeTouch.location(in: inkContentView))) }
         else { collect(activeTouch, event: event, predicting: false) }
         buffer.clearPredictions()
         if capturedEraser != nil {
@@ -414,17 +414,21 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
             inkContentView.previewErasure(of: source, with: erased)
         }
     }
+    /// A held line being swung around resists leaving the horizontal and vertical.
+    private static func locked(_ points: [CGPoint]) -> [CGPoint] {
+        points.count == 2 ? ShapeRecognition.lockedLine(points[0], points[1], lock: AppPreferences.shapeAxisLock * .pi / 180) : points
+    }
     private func scheduleHold() {
         holdTimer?.invalidate()
         guard capturedInk != nil, capturedSettings.shapeRecognitionEnabled, !isRulerActive else { return }
         holdTimer = Timer(timeInterval: 0.55, repeats: false) { [weak self] _ in
             guard let self, let touch = self.activeTouch, !self.awaitingCircle,
-                  let points = ShapeRecognition.recognize(self.buffer.samples.map(\.location)) else { return }
+                  let points = ShapeRecognition.recognize(self.buffer.samples.map(\.location), tolerance: AppPreferences.shapeTolerance, axisLock: AppPreferences.shapeAxisLock) else { return }
             let recognized = self.capturedSettings.shapeAngleSnap == true ? StrokeProcessing.snappedLine(points) : points
             self.heldPoints = recognized
             self.heldAdjustment = ShapeRecognition.Adjustment(points: recognized, pointer: touch.location(in: self.inkContentView))
             self.buffer.clearPredictions(); self.showPreview()
-            UISelectionFeedbackGenerator().selectionChanged()
+            if AppPreferences.shapeHaptics { UISelectionFeedbackGenerator().selectionChanged() }
         }
         if let holdTimer { RunLoop.main.add(holdTimer, forMode: .common) }
     }

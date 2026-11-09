@@ -54,4 +54,26 @@ final class ShapeRecognitionTests: XCTestCase {
         XCTAssertTrue(ShapeRecognition.Adjustment(points: [], pointer: .zero).points(at: .zero).isEmpty)
     }
 
+    func testRelaxedRecognitionLocksAxesAndPrefersCircles() throws {
+        // Slightly tilted line snaps horizontal.
+        let line = (0...20).map { CGPoint(x: CGFloat($0) * 10, y: CGFloat($0) * 0.8) }
+        let locked = try XCTUnwrap(ShapeRecognition.recognize(line, tolerance: 1.25, axisLock: 8))
+        XCTAssertEqual(locked.count, 2); XCTAssertEqual(locked[1].y, locked[0].y, accuracy: 0.001)
+        // A nearly round ellipse becomes a circle; a clearly long one stays an oval.
+        func ellipse(_ w: CGFloat, _ h: CGFloat) -> [CGPoint] { (0...60).map { let a = CGFloat($0) / 60 * 2 * .pi; return CGPoint(x: 100 + cos(a) * w, y: 100 + sin(a) * h) } }
+        let round = try XCTUnwrap(ShapeRecognition.recognize(ellipse(60, 54), tolerance: 1.25, axisLock: 8))
+        let xs = round.map(\.x), ys = round.map(\.y)
+        XCTAssertEqual(xs.max()! - xs.min()!, ys.max()! - ys.min()!, accuracy: 0.5)
+        let oval = try XCTUnwrap(ShapeRecognition.recognize(ellipse(80, 40), tolerance: 1.25, axisLock: 8))
+        XCTAssertGreaterThan((oval.map(\.x).max()! - oval.map(\.x).min()!) / (oval.map(\.y).max()! - oval.map(\.y).min()!), 1.8)
+        // A wobbly triangle with a bent side is still a triangle when relaxed, with its base made horizontal.
+        var triangle: [CGPoint] = []
+        let corners = [CGPoint(x: 0, y: 200), CGPoint(x: 100, y: 0), CGPoint(x: 200, y: 206), CGPoint(x: 0, y: 200)]
+        for (a, b) in zip(corners, corners.dropFirst()) {
+            for step in 0..<20 { let t = CGFloat(step) / 20; triangle.append(CGPoint(x: a.x + (b.x - a.x) * t + sin(t * 9) * 4, y: a.y + (b.y - a.y) * t + cos(t * 7) * 4)) }
+        }
+        triangle.append(corners[3])
+        let shape = try XCTUnwrap(ShapeRecognition.recognize(triangle, tolerance: 1.35, axisLock: 8))
+        XCTAssertEqual(shape.count, 4, "three corners and the closing point")
+    }
 }

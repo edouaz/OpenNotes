@@ -530,7 +530,7 @@ extension EditorSession {
     func recognizeShape() {
         let drawing = canvas.drawing
         guard let last = drawing.strokes.last,
-              let points = ShapeRecognition.recognize(last.path.map { $0.location.applying(last.transform) }) else {
+              let points = ShapeRecognition.recognize(last.path.map { $0.location.applying(last.transform) }, tolerance: AppPreferences.shapeTolerance, axisLock: AppPreferences.shapeAxisLock) else {
             error = "Ambiguous stroke: draw a line, rectangle or closed ellipse."; return
         }
         let controls = points.enumerated().map { index, point in
