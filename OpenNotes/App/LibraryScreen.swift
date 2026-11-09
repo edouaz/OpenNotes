@@ -93,6 +93,7 @@ struct LibraryScreen: View {
                 .accessibilityIdentifier("library.account")
                 .disabled(!store.ready)
             }
+            ToolbarItem(placement: .topBarTrailing) { SyncProgressButton(store: store, cloud: store.cloud).disabled(!store.ready) }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if trash {
@@ -497,5 +498,32 @@ struct CloudStatusLine: View {
         .accessibilityLabel("Sync status: \(cloud.phase.label)")
         .accessibilityValue(cloud.status + (cloud.lastSuccessfulSync.map { ". Last successful sync: " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ". No successful sync yet."))
         .accessibilityHint("Open account and sync details")
+    }
+}
+
+/// Compact save/sync summary in the library toolbar; tap for the pending list and progress.
+struct SyncProgressButton: View {
+    @ObservedObject var store: LibraryStore
+    @ObservedObject var cloud: CloudSync
+    @State private var shown = false
+    var body: some View {
+        let (title, icon) = summary
+        Button { shown = true } label: { Label(title, systemImage: icon).labelStyle(.titleAndIcon).font(.caption).frame(minHeight: 44) }
+            .popover(isPresented: $shown) {
+                VStack(alignment: .leading, spacing: 10) {
+                    SyncProgressView(store: store, cloud: cloud)
+                    Text(cloud.lastSuccessfulSync.map { "Last successful sync " + $0.formatted(date: .abbreviated, time: .shortened) } ?? "No successful sync yet")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding().frame(width: 320)
+            }
+            .accessibilityIdentifier("library.syncProgress")
+    }
+    private var summary: (String, String) {
+        if store.saving { return ("Saving…", "internaldrive") }
+        let progress = cloud.progress
+        if progress.step != .idle { return (progress.total > 0 ? "\(progress.step.rawValue) \(progress.completed)/\(progress.total)" : "Syncing…", "arrow.triangle.2.circlepath.icloud") }
+        guard cloud.libraryLinked && cloud.enabled else { return ("Saved", "checkmark.circle") }
+        let pending = store.library.notes.filter { cloud.notebookState($0) == .pending }.count
+        return pending > 0 ? ("\(pending) to upload", "icloud.and.arrow.up") : ("Synced", "checkmark.icloud")
     }
 }

@@ -79,6 +79,14 @@ struct SyncState: Codable {
     var metaBackfilled: Bool?
 }
 
+struct SyncProgress: Equatable {
+    enum Step: String { case idle = "Up to date", checking = "Checking for changes", downloading = "Downloading", uploading = "Uploading" }
+    var step = Step.idle
+    var completed = 0
+    var total = 0
+    var currentTitle: String?
+}
+
 enum CloudSyncPhase { case local, paused, pending, syncing, synced, offline, failed, needsSignIn, conflict }
 
 @MainActor
@@ -93,6 +101,8 @@ final class CloudSync: ObservableObject {
     @Published var needsSignIn = false
     @Published var folderConflict: CloudFolderConflict?
     @Published var notebookFailures: [UUID: String] = [:]
+    @Published private(set) var progress = SyncProgress()
+    private var progressPublishedAt = Date.distantPast
     private let config: CloudConfiguration?
     private let transport: ((URLRequest) async throws -> (Data, URLResponse))?
     private let stateURL: URL
@@ -338,13 +348,14 @@ final class CloudSync: ObservableObject {
         scheduledSync?.cancel(); scheduledSync = nil; syncRequested = false
         let startGeneration = generation
         running = true; defer {
-            running = false
+            running = false; progress = SyncProgress()
             if syncRequested && enabled && !needsSignIn && !saveFailed && phase == .pending { syncSoon() }
         }
         phase = .syncing; status = "Syncing…"
         Diagnostics.shared.record("sync.begin", ["notes": String(store.library.notes.count), "links": String(state.links.count)])
         var refreshing = false, skipped = false
         var stage = "Preparing sync"
+        report(.checking, 0, 0)
         do {
             if saveFailed {
                 guard await store.flush() else { throw CocoaError(.fileWriteUnknown) }
@@ -376,12 +387,16 @@ final class CloudSync: ObservableObject {
             var downloadFailures: [String] = []
             var newFailures: [UUID: String] = [:]
             var failedNotebooks: Set<UUID> = []
+            let knownRevisions = Set(state.links.values.compactMap(\.revision))
+            let incoming = heads.filter { !knownRevisions.contains($0.revision_id) }.count
+            var downloaded = 0
             for head in heads {
                 do {
                     stage = "Reading notebook \(head.notebook_id.uuidString.prefix(8))"
                     let localID = (state.links.first(where: { $0.value.remoteID == head.notebook_id })?.key).flatMap { UUID(uuidString: $0) } ?? head.notebook_id
                     let link = state.links[localID.uuidString]
                     if link?.revision == head.revision_id || conflicts.contains(where: { $0.localID == localID }) { continue }
+                    report(.downloading, downloaded, max(incoming, downloaded + 1), store.library.note(id: localID)?.title); downloaded += 1
                     guard await store.flushEditors(for: localID) else { skipped = true; continue }
                     let expected = store.library.note(id: localID)
                     let localArchive: NotebookArchive?
@@ -432,6 +447,8 @@ final class CloudSync: ObservableObject {
                 }
             }
             var uploadFailures: [String] = []
+            let outgoing = store.library.notes.filter { !unchangedSinceSync($0) }.count
+            var uploaded = 0
             for note in store.library.notes {
                 if failedNotebooks.contains(state.links[note.id.uuidString]?.remoteID ?? note.id) { continue }
                 stage = "Uploading notebook \(note.id.uuidString.prefix(8))"
@@ -440,6 +457,7 @@ final class CloudSync: ObservableObject {
                 do {
                     guard await store.flushEditors(for: note.id) else { skipped = true; continue }
                     if let current = store.library.note(id: note.id), unchangedSinceSync(current) { continue }
+                    report(.uploading, uploaded, max(outgoing, uploaded + 1), note.title); uploaded += 1
                     let archive = try await store.archive(note.id)
                     let (data, checksum) = try await Task.detached(priority: .utility) {
                         // Never publish ink another device cannot decode: fail here, on the device that owns the data.
@@ -536,6 +554,13 @@ final class CloudSync: ObservableObject {
     private func unchangedSinceSync(_ note: NoteDocument) -> Bool {
         guard let link = state.links[note.id.uuidString] else { return false }
         return !link.checksum.isEmpty && link.modifiedAt == note.updatedAt
+    }
+    // Step changes publish immediately; per-notebook updates at most 4 times per second.
+    private func report(_ step: SyncProgress.Step, _ completed: Int, _ total: Int, _ title: String? = nil) {
+        let now = Date()
+        guard step != progress.step || now.timeIntervalSince(progressPublishedAt) >= 0.25 else { return }
+        progressPublishedAt = now
+        progress = SyncProgress(step: step, completed: completed, total: total, currentTitle: title)
     }
     enum NotebookSyncState: Equatable { case synced, pending, failed(String), conflict }
     func notebookState(_ note: NoteDocument) -> NotebookSyncState {

@@ -111,6 +111,8 @@ struct CloudScreen: View {
                 }
                 .disabled(cloud.running)
 
+                Section("Save and sync progress") { SyncProgressView(store: store, cloud: cloud) }
+
                 if !cloud.notebookFailures.isEmpty {
                     Section("Notebooks that could not sync") {
                         ForEach(cloud.notebookFailures.sorted { $0.key.uuidString < $1.key.uuidString }, id: \.key) { id, message in
@@ -253,6 +255,32 @@ extension CloudSync.NotebookSyncState {
         case .pending: return "Waiting to sync"
         case .failed: return "Sync failed"
         case .conflict: return "Sync conflict"
+        }
+    }
+}
+
+/// Save and sync progress, shared by the library toolbar popover and Account and connections.
+struct SyncProgressView: View {
+    @ObservedObject var store: LibraryStore
+    @ObservedObject var cloud: CloudSync
+    var body: some View {
+        let progress = cloud.progress
+        let pending = cloud.libraryLinked && cloud.enabled ? store.library.notes.filter { cloud.notebookState($0) == .pending } : []
+        VStack(alignment: .leading, spacing: 10) {
+            Label(store.saving ? "Saving to this device…" : "All changes saved on this device", systemImage: store.saving ? "internaldrive" : "checkmark.circle")
+            if progress.step != .idle {
+                if progress.total > 0 {
+                    ProgressView(value: Double(progress.completed), total: Double(progress.total)) {
+                        Text("\(progress.step.rawValue) \(progress.completed + 1) of \(progress.total)")
+                    } currentValueLabel: {
+                        Text([progress.currentTitle, "\(progress.total - progress.completed) notebook(s) remaining"].compactMap { $0 }.joined(separator: " · "))
+                    }
+                } else { ProgressView { Text(progress.step.rawValue) } }
+            } else if cloud.libraryLinked && cloud.enabled {
+                Label(pending.isEmpty ? "Nothing waiting to upload" : "\(pending.count) notebook(s) waiting to upload", systemImage: pending.isEmpty ? "checkmark.icloud" : "icloud.and.arrow.up")
+                ForEach(Array(pending.prefix(5))) { Text($0.title).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if pending.count > 5 { Text("and \(pending.count - 5) more").font(.caption).foregroundStyle(.secondary) }
+            } else { Label("Cloud sync off · notebooks stay on this device", systemImage: "icloud.slash") }
         }
     }
 }
