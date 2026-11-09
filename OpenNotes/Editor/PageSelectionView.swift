@@ -382,6 +382,7 @@ final class SelectionDragPreview: UIView {
     private var lastFreeDelta = CGPoint.zero
     /// Picked-up look for a dragged note: slightly larger, with a shadow, so a hold-and-drag reads as "it is moving".
     func lift() {
+        guard AppPreferences.visualEffects else { return }
         liftScale = 1.04
         foreground.layer.shadowColor = UIColor.black.cgColor; foreground.layer.shadowRadius = 10
         foreground.layer.shadowOffset = CGSize(width: 0, height: 6)

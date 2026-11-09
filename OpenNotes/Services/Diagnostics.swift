@@ -26,6 +26,7 @@ final class FrameMonitor {
     private var frames = 0, hitches = 0
     func begin(_ name: String) {
         end()
+        guard Diagnostics.shared.enabled, AppPreferences.measureFrames else { return }   // a display link per gesture costs battery; only for diagnostics
         self.name = name; started = CACurrentMediaTime(); last = 0; worst = 0; frames = 0; hitches = 0
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)

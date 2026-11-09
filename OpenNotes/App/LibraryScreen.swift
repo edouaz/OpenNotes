@@ -100,7 +100,7 @@ struct LibraryScreen: View {
                             .disabled(!store.library.notes.contains { $0.deletedAt != nil && $0.purgedAt == nil })
                     }
                     Button("Import", systemImage: "square.and.arrow.down") { importer = true }
-                    Button("Diagnostics & logs", systemImage: "stethoscope") { diagnosticsShown = true }
+                    Button("Settings & logs", systemImage: "gearshape") { diagnosticsShown = true }
                     Button("New notebook", systemImage: "plus") { newNotebookShown = true }
                     Button("New folder", systemImage: "folder.badge.plus") { renamedFolder = nil; folderEditorShown = true }
                     Picker("Show", selection: $filter) {

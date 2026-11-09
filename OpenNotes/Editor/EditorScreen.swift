@@ -112,9 +112,9 @@ struct EditorScreen: View {
             previousPreview = nil; nextPreview = nil
             let index = currentIndex; let ordered = pages
             do {
-                if ordered.indices.contains(index - 1) { let image = try await store.disk.thumbnail(ordered[index - 1], pixels: 1400); try Task.checkCancellation(); previousPreview = image }
+                if ordered.indices.contains(index - 1) { let image = try await store.disk.thumbnail(ordered[index - 1], pixels: AppPreferences.batterySaver ? 800 : 1400); try Task.checkCancellation(); previousPreview = image }
                 try Task.checkCancellation()
-                if ordered.indices.contains(index + 1) { let image = try await store.disk.thumbnail(ordered[index + 1], pixels: 1400); try Task.checkCancellation(); nextPreview = image }
+                if ordered.indices.contains(index + 1) { let image = try await store.disk.thumbnail(ordered[index + 1], pixels: AppPreferences.batterySaver ? 800 : 1400); try Task.checkCancellation(); nextPreview = image }
             } catch { }
         }
         .alert("Rename notebook", isPresented: $renameShown) {

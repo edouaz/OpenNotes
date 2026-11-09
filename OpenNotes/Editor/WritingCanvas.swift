@@ -66,7 +66,8 @@ struct WritingCanvas: UIViewRepresentable {
         view.fingerScrollsSelection = !finger
         let selecting = !inlineEditing && !insertingSticky && (selectionMode || (!reading && !editingImages && session.selectedTool == .lasso))
         // Page turning is a finger gesture; the lasso is Pencil-driven (or finger-driven only in finger mode, handled below).
-        view.pageTurn.disabled = editingImages || session.busy
+        view.pageTurn.disabled = editingImages || session.busy || !AppPreferences.swipePaging
+        view.fitGesture.isEnabled = AppPreferences.doubleTapFit
         view.onImageEditingEnded = imageEditingEnded
         canvas.panGestureRecognizer.minimumNumberOfTouches = reading || !finger ? 1 : 2
         canvas.settings = session.toolSettings
@@ -278,7 +279,7 @@ struct WritingCanvas: UIViewRepresentable {
                 let erased = EraserEditing.erase(previous, along: raw, width: max(12, (stroke.style?.width ?? 3) * 3), mode: .pixel)
                 if EraserEditing.changed(erased, previous) { return erased }
             }
-            if InkGestureRecognition.circle(raw) != nil {
+            if AppPreferences.circleToSelect, InkGestureRecognition.circle(raw) != nil {
                 circle = (stroke.id, raw, ProcessInfo.processInfo.systemUptime + 4)
             }
             return nil

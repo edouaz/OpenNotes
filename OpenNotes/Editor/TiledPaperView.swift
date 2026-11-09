@@ -16,7 +16,7 @@ final class TiledPaperView: UIView {
         tiles.delegate = renderer
         tiles.tileSize = CGSize(width: 512, height: 512)
         tiles.levelsOfDetail = 4
-        tiles.levelsOfDetailBias = 3
+        tiles.levelsOfDetailBias = AppPreferences.sharpZoom ? 3 : 2
         tiles.contentsScale = UIScreen.main.scale
         tiles.needsDisplayOnBoundsChange = true
         layer.addSublayer(tiles)

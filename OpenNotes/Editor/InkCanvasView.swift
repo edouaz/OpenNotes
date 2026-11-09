@@ -299,7 +299,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
         for item in measured.sorted(by: { $0.timestamp < $1.timestamp }) {
             buffer.append(sample(item), estimate: item.estimationUpdateIndex?.intValue)
         }
-        if predicting { buffer.predict((event?.predictedTouches(for: touch) ?? []).map(sample)) }
+        if predicting, AppPreferences.pencilPrediction { buffer.predict((event?.predictedTouches(for: touch) ?? []).map(sample)) }
     }
     fileprivate func cancel(_ touches: Set<UITouch>) {
         guard let activeTouch, touches.contains(activeTouch) else { return }
@@ -440,6 +440,7 @@ final class InkCanvasView: UIScrollView, UIScrollViewDelegate {
               drawingGestureRecognizer.isEnabled,
               gesture.state != .ended, gesture.state != .cancelled else { hoverLayer.isHidden = true; return }
         if #available(iOS 17.5, *), !UIPencilInteraction.prefersHoverToolPreview { hoverLayer.isHidden = true; return }
+        guard AppPreferences.hoverPreview else { hoverLayer.isHidden = true; return }
         let point = gesture.location(in: inkContentView)
         guard inkContentView.bounds.contains(point) else { hoverLayer.isHidden = true; return }
         if let eraser = tool as? InkEraserTool {
