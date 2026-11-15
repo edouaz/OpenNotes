@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Install & develop — OpenNotes</title>
-  <meta name="description" content="Install the OpenNotes prototype, run it from source and contribute. Signing requirements, build commands and project documentation.">
+  <meta name="description" content="Install the OpenNotes public preview, run it from source and contribute. Signing requirements, build commands and project documentation.">
   <meta name="theme-color" content="#245fe8">
   <link rel="canonical" href="https://edouaz.github.io/OpenNotes/develop.html">
   <meta property="og:type" content="website">
@@ -27,11 +27,11 @@
   <main id="main" class="article">
     <span class="eyebrow">The developer notebook</span>
     <h1>Get it running.<br>Make it your own.</h1>
-    <p>A practical guide to the public prototype. Start on a simulator, or sign OpenNotes for your own device.</p>
+    <p>A practical guide to the public preview. Start on a simulator, or sign OpenNotes for your own device.</p>
     <nav class="article-nav" aria-label="On this page"><a href="#install">Install the IPA</a><a href="#development">Build from source</a><a href="#tests">Run tests</a><a href="#docs">Project documentation</a></nav>
 
     <section id="install">
-      <h2>Install the prototype</h2>
+      <h2>Install the preview</h2>
       <p><strong>Version 0.1.0, build 36 · iOS/iPadOS 16+ · arm64 · unsigned.</strong></p>
       <a class="button primary" href="https://github.com/edouaz/OpenNotes/releases/download/v0.1.0-prototype.36/OpenNotes-build36-unsigned.ipa">Download the IPA</a>
       <p>The download is a development artifact, not a one-tap installer. iOS requires valid signing and provisioning. This is not an App Store or TestFlight release.</p>
@@ -48,7 +48,7 @@
         <p>Export native backups first. Sign with the same team, bundle identifiers and App Group as your existing installation, and install over it. Do not uninstall before backing up. A changed signing identity or identifier may prevent access to the previous app’s data.</p>
       </div>
       <p><strong>Format compatibility:</strong> older PencilKit pages (including build 9) are unsupported and fail explicitly. Export PDFs and native backups before upgrading; existing native-ink schema 1 is readable, and build 36 writes schema 2 with a backup before first overwrite. Do not downgrade schema-2 notes onto an older app.</p>
-      <p>This is an public preview. Physical Pencil behavior, older hardware and accessibility still need validation. Keep another copy of valuable notes. <a href="https://github.com/edouaz/OpenNotes/blob/main/docs/RELEASE.md">Current release status and checks</a>.</p>
+      <p>This is a public preview. Physical Pencil behavior, older hardware and accessibility still need validation. Keep another copy of valuable notes. <a href="https://github.com/edouaz/OpenNotes/blob/main/docs/RELEASE.md">Current release status and checks</a>.</p>
     </section>
 
     <section id="development">
@@ -80,7 +80,7 @@ xcodebuild -project OpenNotes.xcodeproj -scheme OpenNotes \
   -derivedDataPath build -only-testing:OpenNotesTests \
   CODE_SIGNING_ALLOWED=NO test</code></pre>
       <p>Remove <code>-only-testing:OpenNotesTests</code> to include UI tests, or target a specific UI test class. GitHub Actions runs the unit suite on an available iPad simulator. UI tests use synthetic notebooks and may modify the simulator library; use a dedicated simulator.</p>
-      <p>The website appearance control has a dependency-free regression check:</p>
+      <p>Website links, release content and appearance have dependency-free regression checks:</p>
       <pre><code>node --test docs/tests/*.test.cjs</code></pre>
       <h3>Package an unsigned device build</h3>
       <pre><code>xcodebuild -project OpenNotes.xcodeproj -scheme OpenNotes \
