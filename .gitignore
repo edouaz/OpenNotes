@@ -21,3 +21,8 @@ __pycache__/
 
 .playwright-mcp/
 supabase/.temp/
+
+# Local assistant settings and unsigned distributions
+.claude/
+dist/
+/build-*/

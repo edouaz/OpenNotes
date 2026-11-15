@@ -27,7 +27,7 @@ No migration flag or legacy importer: explicitly waived by user. Prior `.catnote
 - `0635437`: sparse tapered-line rendering correction and regression coverage.
 - **PASS:** final 150 XCTest + 7 Swift Testing tests; actual finger-writing/Undo/Redo/options/process-reopen UI smoke test; unsigned Release archive and IPA integrity checks.
 - Final IPA: `build/artifacts/OpenNotes-ios16-native-ink-build10-unsigned.ipa`; checksum/provenance: `docs/native-ink-build10-package.json`.
-- Final evidence, exact commands, synthetic performance numbers and remaining physical checks: [validation report](docs/INK_VALIDATION.md).
+- Final evidence, exact commands, synthetic performance numbers and remaining physical checks: [validation report](../../docs/INK_VALIDATION.md).
 
 The initial baseline build overlapped implementation and is not independent baseline verification. Final migration builds/tests provide delivery evidence. Old-note conversion was waived; physical iPad/Pencil calibration and the recorded simulator keyboard incident remain validation limits. Implementation and local packaging are complete.
 

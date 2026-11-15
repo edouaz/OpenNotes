@@ -24,9 +24,9 @@ Old PencilKit ink is explicitly unsupported in build 10, as authorized for this 
 
 ## Local persistence
 
-For update compatibility, the on-disk directory keeps its previous name: Application Support/CatNotes contains `library.json`, `library.backup.json` and `resources/`. Metadata is separate from drawing and imported resources. Writes are atomic; autosave waits approximately 700 ms. Leaving a page requires a successful flush. Pending drawing data must survive a failed write. Corruption produces an error and a recovery option rather than an empty replacement library.
+For update compatibility, the on-disk directory keeps its previous name: Application Support/CatNotes contains `library.json`, `library.backup.json` and `resources/`. Metadata is separate from drawing and imported resources. Writes are atomic; autosave is debounced. Leaving a page requires a successful flush. Pending drawing data must survive a failed write. Corruption produces an error and a recovery option rather than an empty replacement library.
 
-Trash is recoverable; resources are not automatically purged. A `.catnote` file is versioned JSON with base64 resources and regenerated identifiers on import. Imports are limited to 150 MB; large notebooks need memory testing on older iPads. Native backups preserve editable data. PDF export keeps the PDF background vector-based but rasterizes ink at 2×.
+Trash is recoverable; resources are not automatically purged. An `.opennote` file (legacy `.catnote` filenames remain accepted) is versioned JSON with base64 resources and regenerated identifiers on import. Imports are limited to 150 MB; large notebooks need memory testing on older iPads. Native backups preserve editable data. PDF export keeps the PDF background vector-based but rasterizes ink at 2×.
 
 ## Optional cloud
 

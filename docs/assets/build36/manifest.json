@@ -1,0 +1,57 @@
+{
+  "test": "ReleaseShowcaseTests/testPublicPreviewTour",
+  "device": "iPad Pro 13-inch (M5)",
+  "simulator": "OpenNotes-Release",
+  "os": "iOS 27.0",
+  "build": "36",
+  "captured": "2026-11-16",
+  "original_pixels": [
+    2064,
+    2752
+  ],
+  "published_pixels": [
+    1080,
+    1440
+  ],
+  "source_attachments": [
+    {
+      "attachments": [
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "F5725F04-AEF9-4506-9677-95BD509E6A81",
+          "deviceName": "OpenNotes-Release",
+          "exportedFileName": "0F39ED99-ADB4-4D97-9124-CA7657F698BC.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "build36-library_0_BC7CE59A-BB23-46E3-83B6-86E514755874.png",
+          "timestamp": 1794783949.589
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "F5725F04-AEF9-4506-9677-95BD509E6A81",
+          "deviceName": "OpenNotes-Release",
+          "exportedFileName": "F9A389F3-8DA1-491D-BC16-126EE77C33E9.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "build36-pen-options_0_1D496E6F-F52F-456D-9FB4-FFBA3A215597.png",
+          "timestamp": 1794783946.136
+        },
+        {
+          "configurationName": "Test Scheme Action",
+          "deviceId": "F5725F04-AEF9-4506-9677-95BD509E6A81",
+          "deviceName": "OpenNotes-Release",
+          "exportedFileName": "D3FBBE57-D8FB-44C9-9DCD-1D07B027563B.png",
+          "isAssociatedWithFailure": false,
+          "suggestedHumanReadableName": "build36-editor_0_EBA1E421-A976-46CF-B063-DD4C89985317.png",
+          "timestamp": 1794783940.241
+        }
+      ],
+      "testIdentifier": "ReleaseShowcaseTests/testPublicPreviewTour()",
+      "testIdentifierURL": "test://com.apple.xcode/OpenNotes/OpenNotesUITests/ReleaseShowcaseTests/testPublicPreviewTour"
+    }
+  ],
+  "published_sha256": {
+    "pen-options.png": "a99037c30ce864edd01e44b9a38e98a3c34a9657d2246ee847cf1e0b11af1a5d",
+    "library.png": "f02eb1ce51e170672873fe0f20de6037ba91a7391a40f96f9a738473109bacb2",
+    "editor.png": "419aea272baf4a28fd518d879f828c357056e992265752b41914c5a64842842e",
+    "tour.gif": "e0f200d3a9dc6994f961b1d265cfec457d5c7cfde57297a6bdb63d27272d4e4a"
+  }
+}

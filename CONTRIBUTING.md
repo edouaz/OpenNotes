@@ -1,6 +1,6 @@
 # Contributing to OpenNotes
 
-Start with the [developer guide](https://edouaz.github.io/OpenNotes/develop.html) and [architecture](docs/ARCHITECTURE.md). The app is a prototype; small, focused fixes are welcome.
+Start with the [developer guide](https://edouaz.github.io/OpenNotes/develop.html) and [architecture](docs/ARCHITECTURE.md). The app is a public preview; small, focused fixes are welcome.
 
 1. Open an issue describing the problem, device, iOS version and steps to reproduce. Use synthetic notes and remove personal information from screenshots.
 2. Fork the repository and create a branch for one change.
@@ -10,6 +10,8 @@ Start with the [developer guide](https://edouaz.github.io/OpenNotes/develop.html
 6. Open a pull request explaining the problem, behavior after the fix, checks performed and any hardware testing still needed.
 
 Commit each coherent feature or fix with its related tests, fixtures and generated project changes. Keep unrelated work in separate commits, and keep each commit buildable so it can be reverted on its own. Use descriptive messages such as `fix(editor): preserve selection while dragging` or `feat(mcp): mark matching text`. Push the branch and open a pull request once the relevant checks pass; preserve these commits when merging if they remain useful rollback points. If a published change causes a regression, use `git revert <commit>` and submit the revert through a pull request.
+
+For website changes, run `node --test docs/tests/*.test.cjs` and check both themes at mobile and desktop widths. Use real simulator screenshots with synthetic notes; record capture provenance in `docs/SCREENSHOTS.md`.
 
 For server changes, run `cd server && npm ci && npm test` with Node.js 22 and Poppler installed (`brew install poppler` on macOS, `apt-get install poppler-utils fonts-dejavu-core` on Debian/Ubuntu). GitHub Actions runs these tests independently of the iOS suite.
 

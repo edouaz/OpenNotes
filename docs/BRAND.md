@@ -2,6 +2,16 @@
 
 OpenNotes uses a small smiling open notebook: white paper, a blue cover and a quiet navy expression. The same silhouette is used on the website and in the app icon. There is no text inside the icon and no baked-in rounded mask; iOS applies its own icon shape.
 
+## Shared visual language
+
+The public tagline is **A little notebook. Room for every idea.** Keep the voice simple, friendly and specific to writing. Describe the current release as a public preview; do not imply App Store availability or verified hardware performance.
+
+- **Blue:** `#3979E8`, the notebook-cover accent. Use the deeper `#245FE8` for small website text and filled buttons to keep readable contrast. White paper and quiet navy `#172B50` anchor the mascot. Website text uses `#142440` on a paper surface `#FAFBF8`; dark mode uses navy surfaces and a lighter blue for contrast.
+- **Type:** native system sans-serif for navigation and body text; Iowan Old Style / Palatino / Georgia for the website’s editorial hero. Keep text selectable and avoid external font downloads.
+- **Layout:** generous space, a faint dotted-paper surface, thin rules and restrained corners. Use the same icon, release name and screenshots in the README, website and release.
+- **Images:** show actual app captures, with synthetic notebooks. Keep the interface intact. Label a GIF assembled from stills as a screenshot slideshow. No generated app screens or invented performance claims.
+- **Motion:** keep the tour behind an explicit disclosure and hide animation when reduced motion is requested. Static screenshots always remain available.
+
 ## Source and reproducible exports
 
 The mascot was generated with the built-in ImageGen tool for this project. The original transparent source is `docs/assets/mascot-source.png`. The website uses the smaller `mascot.png` and `icon-light.png`, `icon-dark.png`, and `icon-tinted.png` exports. The editable generation prompt is recorded below. PNG exports are source artwork, not screenshots or a claim of an installed app.
