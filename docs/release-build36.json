@@ -1,0 +1,51 @@
+{
+  "version": "0.1.0",
+  "build": "36",
+  "channel": "public preview",
+  "tag": "v0.1.0-prototype.36",
+  "artifact": "OpenNotes-build36-unsigned.ipa",
+  "sha256": "e56b2c8e55f5ccf1a226340a45414e444536e4a79a40ff9bc9fc84c82d1b8bc1",
+  "size_bytes": 5067313,
+  "architecture": "arm64",
+  "signed": false,
+  "source_base_commit": "2500b5b89042316611306a4c4cb497441777e6f9",
+  "app_source_sha256": "dd77984817433962846c29f454381c90059801c07dc04c077f50abd55ec8291f",
+  "bundles": [
+    {
+      "bundle": "OpenNotes.app",
+      "version": "0.1.0",
+      "build": "36",
+      "minimum_os": "16.0"
+    },
+    {
+      "bundle": "OpenNotesShare.appex",
+      "version": "0.1.0",
+      "build": "36",
+      "minimum_os": "16.0"
+    }
+  ],
+  "checks": {
+    "release_archive": "passed",
+    "zip_integrity": "passed",
+    "mcp_tests": 59,
+    "shape_recognition_tests": 5,
+    "xctest": {
+      "executed": 321,
+      "passed": 320,
+      "skipped": 1,
+      "failed": 0,
+      "skip_reason": "Optional bundled cloud configuration is absent in a local-only build."
+    },
+    "swift_testing": {
+      "passed": 6,
+      "failed": 0
+    },
+    "project_generation": "reproducible without private configuration",
+    "showcase_ui_tests": {
+      "passed": 1,
+      "failed": 0
+    },
+    "website_tests": 3
+  },
+  "cloud_configuration_bundled": false
+}

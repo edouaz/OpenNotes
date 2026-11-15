@@ -6,6 +6,12 @@
   <title>Install & develop — OpenNotes</title>
   <meta name="description" content="Install the OpenNotes prototype, run it from source and contribute. Signing requirements, build commands and project documentation.">
   <meta name="theme-color" content="#245fe8">
+  <link rel="canonical" href="https://edouaz.github.io/OpenNotes/develop.html">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Install & develop — OpenNotes">
+  <meta property="og:description" content="Handwriting, PDFs and everyday thoughts, together on iPad and iPhone. Native. Open source. Yours.">
+  <meta property="og:image" content="https://edouaz.github.io/OpenNotes/assets/icon-light.png">
+  <meta name="twitter:card" content="summary">
   <script src="theme.js"></script>
   <link rel="stylesheet" href="style.css">
   <link rel="icon" href="assets/icon-light.png" type="image/png">
@@ -26,8 +32,8 @@
 
     <section id="install">
       <h2>Install the prototype</h2>
-      <p><strong>Version 0.1.0, build 11 · iOS/iPadOS 16+ · arm64 · unsigned.</strong></p>
-      <a class="button primary" href="https://github.com/edouaz/OpenNotes/releases/download/v0.1.0-prototype.11/OpenNotes-ipados16-goodnotes-build11-unsigned.ipa">Download the IPA</a>
+      <p><strong>Version 0.1.0, build 36 · iOS/iPadOS 16+ · arm64 · unsigned.</strong></p>
+      <a class="button primary" href="https://github.com/edouaz/OpenNotes/releases/download/v0.1.0-prototype.36/OpenNotes-build36-unsigned.ipa">Download the IPA</a>
       <p>The download is a development artifact, not a one-tap installer. iOS requires valid signing and provisioning. This is not an App Store or TestFlight release.</p>
       <ol>
         <li>Download the IPA to your Mac or PC.</li>
@@ -41,8 +47,8 @@
         <p>OpenNotes keeps the earlier app’s bundle identifiers, App Group, Keychain service and local data directory. These technical identifiers deliberately retain their old spelling so an in-place update can access existing notes. The app, project, modules and public identity are OpenNotes.</p>
         <p>Export native backups first. Sign with the same team, bundle identifiers and App Group as your existing installation, and install over it. Do not uninstall before backing up. A changed signing identity or identifier may prevent access to the previous app’s data.</p>
       </div>
-      <p><strong>Format compatibility:</strong> older PencilKit pages (including build 9) are unsupported and fail explicitly. Export PDFs and native backups before upgrading; existing native-ink schema 1 is readable, and build 11 writes schema 2 with a backup before first overwrite. Do not downgrade schema-2 notes onto an older app.</p>
-      <p>This is an early prototype. Physical Pencil behavior, older hardware and accessibility still need validation. Keep another copy of valuable notes. <a href="https://github.com/edouaz/OpenNotes/blob/main/IMPLEMENTATION_REPORT.md">Implementation status and remaining differences</a>.</p>
+      <p><strong>Format compatibility:</strong> older PencilKit pages (including build 9) are unsupported and fail explicitly. Export PDFs and native backups before upgrading; existing native-ink schema 1 is readable, and build 36 writes schema 2 with a backup before first overwrite. Do not downgrade schema-2 notes onto an older app.</p>
+      <p>This is an public preview. Physical Pencil behavior, older hardware and accessibility still need validation. Keep another copy of valuable notes. <a href="https://github.com/edouaz/OpenNotes/blob/main/docs/RELEASE.md">Current release status and checks</a>.</p>
     </section>
 
     <section id="development">
@@ -75,7 +81,7 @@ xcodebuild -project OpenNotes.xcodeproj -scheme OpenNotes \
   CODE_SIGNING_ALLOWED=NO test</code></pre>
       <p>Remove <code>-only-testing:OpenNotesTests</code> to include UI tests, or target a specific UI test class. GitHub Actions runs the unit suite on an available iPad simulator. UI tests use synthetic notebooks and may modify the simulator library; use a dedicated simulator.</p>
       <p>The website appearance control has a dependency-free regression check:</p>
-      <pre><code>node docs/tests/theme.test.cjs</code></pre>
+      <pre><code>node --test docs/tests/*.test.cjs</code></pre>
       <h3>Package an unsigned device build</h3>
       <pre><code>xcodebuild -project OpenNotes.xcodeproj -scheme OpenNotes \
   -configuration Release -destination 'generic/platform=iOS' \
@@ -83,16 +89,18 @@ xcodebuild -project OpenNotes.xcodeproj -scheme OpenNotes \
 
 python3 scripts/package-ipa.py \
   build/OpenNotes.xcarchive/Products/Applications/OpenNotes.app \
-  build/OpenNotes-ipados16-goodnotes-build11-unsigned.ipa</code></pre>
+  build/OpenNotes-build36-unsigned.ipa</code></pre>
       <p>The packaging script refuses to overwrite an existing output and verifies ZIP integrity. Unsigned packaging does not establish installability.</p>
     </section>
 
     <section id="docs">
       <h2>Find the right starting point</h2>
       <ul>
+        <li><a href="https://github.com/edouaz/OpenNotes/blob/main/docs/GETTING_STARTED.md">Getting started</a> — writing, PDFs, export and backups.</li>
+        <li><a href="https://github.com/edouaz/OpenNotes/blob/main/docs/README.md">Documentation index</a> — user guides, engineering and connected services.</li>
         <li><a href="https://github.com/edouaz/OpenNotes/blob/main/docs/ARCHITECTURE.md">Architecture and storage</a> — modules, save behavior, backups and import/export.</li>
         <li><a href="https://github.com/edouaz/OpenNotes/blob/main/CONTRIBUTING.md">Contributing</a> — focused changes, tests and pull requests.</li>
-        <li><a href="https://github.com/edouaz/OpenNotes/blob/main/docs/RELEASE.md">Release notes</a> — build 11 changes, limits and artifact manifest.</li>
+        <li><a href="https://github.com/edouaz/OpenNotes/blob/main/docs/RELEASE.md">Release notes</a> — build 36 changes, limits and artifact manifest.</li>
         <li><a href="https://github.com/edouaz/OpenNotes/blob/main/docs/SUPABASE.md">Optional Supabase experiment</a> — setup and validation boundaries. Not required for local notebooks.</li>
         <li><a href="https://github.com/edouaz/OpenNotes/blob/main/SECURITY.md">Security reporting</a> and <a href="https://github.com/edouaz/OpenNotes/blob/main/THIRD_PARTY_NOTICES.md">third-party notices</a>.</li>
       </ul>
@@ -100,6 +108,6 @@ python3 scripts/package-ipa.py \
       <p>The site is plain HTML, CSS and a small appearance script in <code>docs/</code>. Preview with <code>python3 -m http.server 8000 --directory docs</code>. GitHub Pages publishes that directory from <code>main</code>. No frontend build tool, package installation or tracking script. <a href="https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site">GitHub’s publishing guide</a> explains the Pages configuration.</p>
     </section>
   </main>
-  <footer><a href="./">Back to OpenNotes</a><span>Early public prototype · MIT licensed</span></footer>
+  <footer><a href="./">Back to OpenNotes</a><span>Public preview · MIT licensed</span></footer>
 </body>
 </html>

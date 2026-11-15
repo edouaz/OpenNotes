@@ -21,6 +21,8 @@ Web signup, password recovery, an authorized-client list and user-facing grant r
 
 ## Configuration and data
 
+The checked-in project and public IPA use local notebooks without a bundled cloud configuration. To connect your own backend, copy `Config/Supabase.example.plist` to `Config/Supabase.plist`, fill in your HTTPS project URL and publishable key, then run `python3 scripts/generate-project.py` before rebuilding. Keep the resulting environment-specific project changes out of an unrelated pull request.
+
 The existing **Test** project (`evuqpcklfxxnjzjcrwos`) has been configured in the previous deployment work. `Config/Supabase.plist` is ignored by Git; it contains the HTTPS project URL and a publishable key. The configuration loader rejects secret keys and privileged-role JWTs. The project generator includes the plist when present. No privileged backend key belongs in the app.
 
 For a new environment, apply all migrations in order:

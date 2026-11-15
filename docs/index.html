@@ -3,9 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>OpenNotes — A friendly place for your ideas</title>
-  <meta name="description" content="A native, open-source notebook for iPad and iPhone. Write, annotate PDFs and keep your notebooks on your device. Explore the OpenNotes prototype.">
+  <title>OpenNotes — A little notebook. Room for every idea.</title>
+  <meta name="description" content="Handwriting, PDFs and everyday thoughts, together on iPad and iPhone. Explore the native, open-source OpenNotes notebook.">
   <meta name="theme-color" content="#245fe8">
+  <link rel="canonical" href="https://edouaz.github.io/OpenNotes/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="OpenNotes — A little notebook. Room for every idea.">
+  <meta property="og:description" content="Handwriting, PDFs and everyday thoughts, together on iPad and iPhone. Native. Open source. Yours.">
+  <meta property="og:image" content="https://edouaz.github.io/OpenNotes/assets/icon-light.png">
+  <meta name="twitter:card" content="summary">
   <script src="theme.js"></script>
   <link rel="stylesheet" href="style.css">
   <link rel="icon" href="assets/icon-light.png" type="image/png">
@@ -15,7 +21,7 @@
   <header>
     <a class="brand" href="./"><img src="assets/icon-light.png" width="42" height="42" alt="">OpenNotes</a>
     <nav aria-label="Main navigation">
-      <a href="#explore">Explore</a>
+      <a href="#explore">The notebook</a>
       <a href="develop.html">Documentation</a>
       <a href="https://github.com/edouaz/OpenNotes">GitHub</a>
     </nav>
@@ -28,19 +34,19 @@
   <main id="main">
     <section class="hero">
       <div>
-        <span class="status">Open source. Still growing.</span>
-        <h1>A friendly place<br>for <span>your ideas.</span></h1>
-        <p class="intro">Write a little. Think a lot. Keep your handwriting, PDFs and everyday notes together on iPad and iPhone.</p>
-        <p>Meet OpenNotes: a native notebook, with a small smile and plenty of room to make it your own.</p>
+        <span class="status">For iPad & iPhone · Open source</span>
+        <h1>A little notebook.<br><span>Room for every idea.</span></h1>
+        <p class="intro">For the lecture, the next project, the thought you don’t want to lose. Handwriting, PDFs and everyday notes, together in one quiet place.</p>
+        <p>Made for iPad and iPhone. Yours to use, yours to explore.</p>
         <div class="buttons">
-          <a class="button primary" href="https://github.com/edouaz/OpenNotes/releases/download/v0.1.0-prototype.11/OpenNotes-ipados16-goodnotes-build11-unsigned.ipa">Get the prototype</a>
+          <a class="button primary" href="https://github.com/edouaz/OpenNotes/releases/download/v0.1.0-prototype.36/OpenNotes-build36-unsigned.ipa">Try OpenNotes</a>
           <a class="button" href="develop.html#install">How to install</a>
         </div>
-        <p class="fine">Build 11 · iOS 16+ · Unsigned IPA — signing required</p>
+        <p class="fine">Public preview · Build 36 · iOS 16+<br>Unsigned IPA · Your own signing is required</p>
       </div>
       <div class="hero-visual">
         <div class="screenshot-shell">
-          <img src="assets/goodnotes-build11/editor-reopened.png" width="2064" height="2752" alt="OpenNotes on iPad with its custom drawing toolbar and lined notebook paper">
+          <img src="assets/build36/editor.png" width="2064" height="2752" alt="OpenNotes build 36 on iPad, showing a mountain sketch on grid paper with the native drawing toolbar">
         </div>
         <div class="mascot-note">
           <img src="assets/mascot.png" width="62" height="62" alt="">
@@ -50,7 +56,7 @@
     </section>
 
     <div class="strip">
-      <span>Native SwiftUI</span><span>Powered by PencilKit</span><span>Local notebooks</span><span>No account needed</span><span>MIT licensed</span>
+      <span>Native SwiftUI</span><span>Native ink engine</span><span>Local notebooks</span><span>No account needed</span><span>MIT licensed</span>
     </div>
 
     <section class="section" id="explore">
@@ -63,7 +69,7 @@
         <article class="feature">
           <span class="number">01 / WRITE</span>
           <h3>A pen that feels like yours.</h3>
-          <p>Pen, pencil, highlighter, eraser and lasso. Choose a color and width, and see a real stroke preview before you start.</p>
+          <p>Ballpoint, fountain or brush. Tune the color, width and feel. Sketch a shape, erase a detail, or move a whole thought with the lasso.</p>
         </article>
         <article class="feature">
           <span class="number">02 / COLLECT</span>
@@ -75,33 +81,44 @@
           <div>
             <span class="number">03 / KEEP</span>
             <h3>Your notes, on your device.</h3>
-            <p>Start without an account. Export a PDF to share, or a native .catnote backup to keep editing. Your notebooks have a way out.</p>
+            <p>Start without an account. Export a PDF to share, or a native .opennote backup to keep editing. Your notebooks have a way out.</p>
           </div>
         </article>
       </div>
       <div class="gallery">
         <figure>
-          <div class="screenshot-shell"><img loading="lazy" src="assets/goodnotes-build11/library-list.png" alt="OpenNotes notebook library with notebook list and navigation"></div>
-          <figcaption><strong>A home for your notebooks.</strong>Real iPad simulator capture, build 11.</figcaption>
+          <div class="screenshot-shell"><img loading="lazy" src="assets/build36/library.png" alt="OpenNotes notebook library with notebook covers and navigation"></div>
+          <figcaption><strong>A home for your notebooks.</strong>Folders, favorites and notebooks, ready when you are. Real build 36 capture.</figcaption>
         </figure>
         <figure>
-          <div class="screenshot-shell"><img loading="lazy" src="assets/goodnotes-build11/pen-options.png" alt="OpenNotes pen settings with a stroke preview, style, color and width controls"></div>
-          <figcaption><strong>Find your favorite pen.</strong>Real instrument preview, build 11.</figcaption>
+          <div class="screenshot-shell"><img loading="lazy" src="assets/build36/pen-options.png" alt="OpenNotes pen settings with a stroke preview, style, color and width controls"></div>
+          <figcaption><strong>Find your favorite pen.</strong>Profiles, color and stabilization. Real build 36 capture.</figcaption>
         </figure>
       </div>
+    </section>
+
+    <section class="section tour-section" id="tour">
+      <div class="section-heading">
+        <div><span class="eyebrow">A closer look</span><h2>Three moments.<br>One little notebook.</h2></div>
+        <p>From your library to the page, then a pen of your own. A short slideshow of real simulator captures.</p>
+      </div>
+      <details class="tour"><summary>Play the screenshot tour <span aria-hidden="true">↗</span></summary>
+        <img src="assets/build36/tour.gif" width="720" height="960" loading="lazy" alt="A looping slideshow of the OpenNotes library, a mountain sketch in the editor and native pen options">
+        <p class="fine">Synthetic notes · Build 36 · <a href="https://github.com/edouaz/OpenNotes/blob/main/docs/SCREENSHOTS.md">Capture details</a>. A screenshot slideshow, not a drawing-speed demonstration.</p>
+      </details>
     </section>
 
     <section class="section split" id="prototype">
       <div>
         <span class="eyebrow">Small steps, out in the open</span>
-        <h2>A prototype.<br>With room to grow.</h2>
-        <p>OpenNotes is far from a final release. We are sharing it early so you can explore the app, understand the code and help decide what comes next.</p>
-        <a href="https://github.com/edouaz/OpenNotes/blob/main/docs/RELEASE.md">Read the build 11 release notes</a>
+        <h2>Ready for a first page.<br>Still growing.</h2>
+        <p>Writing, PDF annotation, notebook tabs and editable backups are here. This public preview brings the current app together in one release, with more work ahead on real-device validation.</p>
+        <a href="https://github.com/edouaz/OpenNotes/blob/main/docs/RELEASE.md">Read the build 36 release notes</a>
       </div>
       <aside class="callout">
-        <h3>A few honest notes.</h3>
+        <h3>Before you begin.</h3>
         <p>The IPA needs signing before installation. Physical Apple Pencil performance, older iPads and accessibility still need real-world validation.</p>
-        <p>Older PencilKit pages from build 9 are unsupported in this native-ink release. Export backups before upgrading. Cloud sync remains experimental.</p>
+        <p>Export a backup before upgrading. Older PencilKit pages need their original build. Local use needs no account; optional cloud sync remains experimental.</p>
       </aside>
     </section>
 
